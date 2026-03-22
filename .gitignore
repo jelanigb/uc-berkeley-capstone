@@ -4,3 +4,8 @@ __pycache__/
 .DS_Store
 venv/
 *.egg-info/
+# GCP service account keys
+*-service-account*.json
+service-account*.json
+*-credentials.json
+maduros-dolce-*.json   # project-specific pattern
