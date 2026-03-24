@@ -155,14 +155,14 @@ def load_baselines(version_tag: str):
     return df_baselines, df_medians, metadata
 
 
-def snapshot_training_data(version_tag: str, notes: str = ""):
+def snapshot_video_data(version_tag: str, notes: str = ""):
     """
     Pull current video_snapshots from BQ, save as Parquet,
     upload to GCS with a metadata sidecar JSON.
 
     Usage:
-        snapshot_training_data("v1.0_real", notes="First real-only dataset")
-        snapshot_training_data("v1.2_mixed30", notes="30% real, 70% synthetic")
+        snapshot_video_data("v1.0_real", notes="First real-only dataset")
+        snapshot_video_data("v1.2_mixed30", notes="30% real, 70% synthetic")
     """
     bq_client = bigquery.Client(project=PROJECT_ID)
     gcs_client = storage.Client(project=PROJECT_ID)
@@ -248,14 +248,27 @@ def list_snapshots():
     for mf in sorted(meta_files):
         blob = bucket.blob(mf)
         meta = json.loads(blob.download_as_text())
-        print(
-            f"  {meta['version_tag']}  |  {meta['total_rows']} rows  |  {meta['snapshot_timestamp'][:10]}"
-        )
-        print(f"    Polls: {meta['poll_label_counts']}")
-        print(f"    File:  {meta['parquet_file']}\n")
+        tag = meta.get("version_tag", "unknown")
+        ts = meta.get("snapshot_timestamp", "")[:10]
+
+        if "total_rows" in meta:
+            # Video snapshot metadata
+            print(f"  [videos]    {tag}  |  {meta['total_rows']} rows  |  {ts}")
+            print(f"              Polls: {meta.get('poll_label_counts', {})}")
+            print(f"              File:  {meta.get('parquet_file', '')}\n")
+        elif "baseline_video_rows" in meta:
+            # Baseline metadata
+            print(
+                f"  [baselines] {tag}  |  {meta['baseline_video_rows']} baseline videos, "
+                f"{meta['baseline_median_rows']} medians  |  {ts}"
+            )
+            print(f"              Files: {meta.get('baselines_file', '')}")
+            print(f"                     {meta.get('medians_file', '')}\n")
+        else:
+            print(f"  [unknown]   {tag}  |  {ts}\n")
 
 
-def load_snapshot(version_tag: str):
+def load_videos(version_tag: str):
     """
     Load an existing snapshot from GCS by version tag.
     Returns (DataFrame, metadata dict).
