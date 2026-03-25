@@ -9,3 +9,6 @@ venv/
 service-account*.json
 *-credentials.json
 maduros-dolce-*.json   # project-specific pattern
+# Model artifacts (versioned in GCS, not git)
+models/
+*.pkl
