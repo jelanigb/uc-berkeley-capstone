@@ -203,8 +203,16 @@ def snapshot_video_data(version_tag: str, notes: str = ""):
         "vertical_counts": vertical_counts,
         "tier_counts": tier_counts,
         "date_range": {
-            "earliest_publish": str(df["published_at"].min()),
-            "latest_publish": str(df["published_at"].max()),
+            "earliest_publish": (
+                str(df["published_at"].dropna().min())
+                if "published_at" in df.columns
+                else ""
+            ),
+            "latest_publish": (
+                str(df["published_at"].dropna().max())
+                if "published_at" in df.columns
+                else ""
+            ),
         },
         "columns": df.columns.tolist(),
         "parquet_file": f"gs://{BUCKET_NAME}/snapshots/{parquet_filename}",
@@ -330,23 +338,35 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = ""):
     local_parquet = f"/tmp/{parquet_filename}"
     df.to_parquet(local_parquet, index=False)
 
-    poll_counts = df["poll_label"].value_counts().to_dict()
-    vertical_counts = df["vertical"].value_counts().to_dict()
-    tier_counts = df["tier"].value_counts().to_dict()
-
-    synthetic_count = (
-        int(df["is_synthetic"].sum()) if "is_synthetic" in df.columns else 0
+    poll_counts = (
+        df["poll_label"].value_counts().to_dict()
+        if "poll_label" in df.columns
+        else {}
     )
-    real_count = len(df) - synthetic_count
+    vertical_counts = (
+        df["vertical"].value_counts().to_dict()
+        if "vertical" in df.columns
+        else {}
+    )
+    tier_counts = (
+        df["tier"].value_counts().to_dict() if "tier" in df.columns else {}
+    )
+
+    synthetic_row_count = (
+        int(df["contains_synthetic_data"].sum())
+        if "contains_synthetic_data" in df.columns
+        else 0
+    )
+    real_count = len(df) - synthetic_row_count
 
     metadata = {
         "version_tag": version_tag,
         "snapshot_timestamp": now.isoformat(),
         "total_rows": len(df),
         "real_rows": real_count,
-        "synthetic_rows": synthetic_count,
+        "synthetic_rows": synthetic_row_count,
         "synthetic_pct": (
-            round(synthetic_count / len(df) * 100, 1) if len(df) > 0 else 0
+            round(synthetic_row_count / len(df) * 100, 1) if len(df) > 0 else 0
         ),
         "unique_videos": df["video_id"].nunique(),
         "unique_channels": df["channel_id"].nunique(),
@@ -354,8 +374,16 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = ""):
         "vertical_counts": vertical_counts,
         "tier_counts": tier_counts,
         "date_range": {
-            "earliest_publish": str(df["published_at"].min()),
-            "latest_publish": str(df["published_at"].max()),
+            "earliest_publish": (
+                str(df["published_at"].dropna().min())
+                if "published_at" in df.columns
+                else ""
+            ),
+            "latest_publish": (
+                str(df["published_at"].dropna().max())
+                if "published_at" in df.columns
+                else ""
+            ),
         },
         "columns": df.columns.tolist(),
         "parquet_file": f"gs://{BUCKET_NAME}/snapshots/{parquet_filename}",
@@ -375,7 +403,9 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = ""):
     )
 
     print(f"\n--- Snapshot {version_tag} ---")
-    print(f"  Rows: {len(df)} ({real_count} real, {synthetic_count} synthetic)")
+    print(
+        f"  Rows: {len(df)} ({real_count} real, {synthetic_row_count} synthetic)"
+    )
     print(f"  Polls: {poll_counts}")
     print(f"  GCS: gs://{BUCKET_NAME}/{gcs_prefix}/{parquet_filename}")
 
