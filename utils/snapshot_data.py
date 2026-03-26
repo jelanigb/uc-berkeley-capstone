@@ -324,7 +324,7 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = ""):
     """
     Save an arbitrary DataFrame as a versioned Parquet snapshot to GCS.
     Use this for combined real+synthetic datasets.
-    Returns metadata dict.
+    Returns metadata object about the snapshot.
     """
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
