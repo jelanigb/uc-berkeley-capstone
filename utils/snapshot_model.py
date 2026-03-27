@@ -245,6 +245,16 @@ def save_model(
 
     Saves: model.pkl, scaler.pkl, feature_cols.json, metadata.json
     """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+
+    existing = list(bucket.list_blobs(prefix=f"models/{version_tag}/"))
+    if existing:
+        raise ValueError(
+            f"Model snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
     model_dir = f"models/{version_tag}"
     os.makedirs(model_dir, exist_ok=True)
 
@@ -274,8 +284,6 @@ def save_model(
     print(f"Model artifacts saved to {model_dir}/")
 
     # Upload to GCS
-    gcs_client = storage.Client(project=PROJECT_ID)
-    bucket = gcs_client.bucket(BUCKET_NAME)
 
     for filename in ['model.pkl', 'scaler.pkl', 'feature_cols.json', 'metadata.json']:
         local_path = f"{model_dir}/{filename}"

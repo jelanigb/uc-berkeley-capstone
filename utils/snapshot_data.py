@@ -20,6 +20,25 @@ BASELINE_MEDIANS_QUERY = f"""
 """
 
 
+def _version_tag_exists(bucket, version_tag: str, snapshot_type: str) -> bool:
+    """
+    Check whether a snapshot with this version_tag already exists in GCS.
+
+    snapshot_type options:
+      "raw_video"  — BQ video_snapshots pulls (snapshot_video_data)
+      "mixed"      — combined real+synthetic saves (save_snapshot)
+      "baselines"  — channel baseline pulls (snapshot_baselines)
+    """
+    prefix_map = {
+        "raw_video": f"snapshots/snapshots_{version_tag}_",
+        "mixed":     f"snapshots/snapshots_{version_tag}_",
+        "baselines": f"snapshots/baselines_{version_tag}_",
+    }
+    prefix = prefix_map[snapshot_type]
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    return len(blobs) > 0
+
+
 def snapshot_baselines(version_tag: str, notes: str = ""):
     """
     Pull channel_baseline_videos and channel_baseline_medians from BQ,
@@ -31,6 +50,13 @@ def snapshot_baselines(version_tag: str, notes: str = ""):
     bq_client = bigquery.Client(project=PROJECT_ID)
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if _version_tag_exists(bucket, version_tag, "baselines"):
+        raise ValueError(
+            f"Baseline snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
     now = datetime.utcnow()
     timestamp = now.strftime("%Y%m%d_%H%M%S")
 
@@ -167,6 +193,13 @@ def snapshot_video_data(version_tag: str, notes: str = ""):
     bq_client = bigquery.Client(project=PROJECT_ID)
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if _version_tag_exists(bucket, version_tag, "raw_video"):
+        raise ValueError(
+            f"Video snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
     now = datetime.utcnow()
 
     # --- Pull data ---
@@ -328,6 +361,13 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = ""):
     """
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if _version_tag_exists(bucket, version_tag, "mixed"):
+        raise ValueError(
+            f"Mixed snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
     now = datetime.utcnow()
 
     timestamp = now.strftime("%Y%m%d_%H%M%S")
