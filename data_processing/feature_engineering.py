@@ -96,27 +96,95 @@ VELOCITY_METRICS = [
 
 def compute_velocity_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute rate-of-change features for all metric columns
-    during the first 24 hours (upload → 24h).
+    Compute velocity, acceleration, and normalized velocity features.
 
-    Creates columns: {metric}_velocity_24h = (val_24h - val_upload) / hours_elapsed
+    Sections:
+      1. Upload→24h velocity for all metrics (core rate-of-change)
+      2. Publish→upload velocity for views/likes (early momentum signal)
+      3. Subscriber-normalized velocity (cross-tier comparability)
+      4. Velocity ratio vs baseline median (velocity in channel context)
+      5. Velocity acceleration (ratio of 24h velocity to upload velocity)
     """
     df = df.copy()
 
-    hours_elapsed = (
+    sub_count = df['subscriber_count_upload'].clip(lower=1)
+    baseline_views = df['baseline_median_views'].clip(lower=1)
+
+    # Hours in the upload→24h window
+    hours_24h = (
         df['hours_since_publish_24h'] - df['hours_since_publish_upload']
-    ).clip(lower=0.1)  # avoid division by zero
+    ).clip(lower=0.1)
 
+    # Hours from publish to the upload poll (used for early momentum)
+    hours_upload = df['hours_since_publish_upload'].clip(lower=0.1)
+
+    # --- 1. Upload→24h velocity for all metrics ---
     for metric in VELOCITY_METRICS:
-        col_upload = f"{metric}_upload"
-        col_24h = f"{metric}_24h"
+        col_u, col_24 = f"{metric}_upload", f"{metric}_24h"
+        if col_u in df.columns and col_24 in df.columns:
+            df[f"{metric}_velocity_24h"] = (df[col_24] - df[col_u]) / hours_24h
 
-        if col_upload in df.columns and col_24h in df.columns:
-            df[f"{metric}_velocity_24h"] = (
-                (df[col_24h] - df[col_upload]) / hours_elapsed
-            )
+    # --- 2. Publish→upload velocity (how fast views/likes arrived pre-upload poll) ---
+    df['view_velocity_upload'] = df['view_count_upload'] / hours_upload
+    df['like_velocity_upload'] = df['like_count_upload'] / hours_upload
 
-    print(f"  Computed velocity for: {VELOCITY_METRICS}")
+    # --- 3. Subscriber-normalized 24h velocity (removes channel-size bias) ---
+    df['view_velocity_per_sub_24h'] = df['view_count_velocity_24h'] / sub_count
+    df['like_velocity_per_sub_24h'] = df['like_count_velocity_24h'] / sub_count
+
+    # --- 4. Velocity ratio: 24h view velocity vs channel's typical view count ---
+    # Captures whether momentum is fast *for this channel*, not just in absolute terms
+    df['view_velocity_ratio'] = df['view_count_velocity_24h'] / baseline_views
+
+    # --- 5. Acceleration: did momentum increase from upload window to 24h window? ---
+    df['view_velocity_acceleration'] = (
+        df['view_count_velocity_24h'] / df['view_velocity_upload'].clip(lower=0.01)
+    )
+    df['like_velocity_acceleration'] = (
+        df['like_count_velocity_24h'] / df['like_velocity_upload'].clip(lower=0.01)
+    )
+
+    print(f"  Computed velocity, upload momentum, normalized velocity, and acceleration features")
+    return df
+
+
+# =========================================================================
+# Ratio and baseline-normalization features
+# =========================================================================
+
+def compute_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute features that express counts as ratios or relative to channel norms.
+
+    Sections:
+      1. Upload-time performance vs channel baseline (early traction signal)
+      2. Like rate at each snapshot (engagement quality independent of scale)
+    """
+    df = df.copy()
+
+    # --- 1. Upload-time counts vs channel baseline median ---
+    # Early traction signal: how is this video doing vs the channel's norm at upload?
+    df['view_count_upload_vs_baseline'] = (
+        df['view_count_upload'] / df['baseline_median_views'].clip(lower=1)
+    )
+    df['like_count_upload_vs_baseline'] = (
+        df['like_count_upload'] / df['baseline_median_likes'].clip(lower=1)
+    )
+
+    # --- 2. Like rate (likes / views) at upload and 24h ---
+    # Captures engagement quality independent of view volume
+    df['like_rate_upload'] = np.where(
+        df['view_count_upload'] > 0,
+        df['like_count_upload'] / df['view_count_upload'],
+        0.0,
+    )
+    df['like_rate_24h'] = np.where(
+        df['view_count_24h'] > 0,
+        df['like_count_24h'] / df['view_count_24h'],
+        0.0,
+    )
+
+    print(f"  Computed ratio and baseline-normalized features")
     return df
 
 
@@ -278,15 +346,45 @@ def compute_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================================
+# Thumbnail features
+# =========================================================================
+
+def compute_thumbnail_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive features from thumbnail CV signals."""
+    df = df.copy()
+
+    # Binary flag: face presence drives CTR more reliably than raw count
+    df['has_face'] = (df['face_count'] > 0).astype(int)
+
+    print(f"  Computed thumbnail features")
+    return df
+
+
+# =========================================================================
 # Duration features
 # =========================================================================
+
+# Ordinal length buckets: S=0, M=1, L=2, XL=3
+# Thresholds in seconds: Shorts / standard short-form / mid-form / long-form
+_DURATION_THRESHOLDS = [(60, 0), (600, 1), (1200, 2)]
+
+
+def _duration_bucket(secs: float) -> int:
+    for threshold, code in _DURATION_THRESHOLDS:
+        if secs <= threshold:
+            return code
+    return 3  # XL: > 1200s (20+ min)
+
 
 def compute_duration_features(df: pd.DataFrame) -> pd.DataFrame:
     """Derive duration-related features."""
     df = df.copy()
 
-    df['is_short'] = (df['duration_seconds'] <= 60).astype(int)
-    df['duration_minutes'] = df['duration_seconds'] / 60
+    df['is_short'] = (df['duration_seconds'] <= 60).astype(int)   # YouTube Shorts territory
+    df['is_long'] = (df['duration_seconds'] > 1200).astype(int)   # 20+ min long-form
+
+    # Ordinal bucket useful for trees; captures non-linear length effects
+    df['duration_bucket'] = df['duration_seconds'].apply(_duration_bucket)
 
     print(f"  Computed duration features")
     return df
@@ -308,26 +406,32 @@ def engineer_features(df_clean: pd.DataFrame) -> pd.DataFrame:
     print("Engineering features")
     print("=" * 60)
 
-    print("\n[1/7] Computing target variable...")
+    print("\n[1/9] Computing target variable...")
     df = compute_target(df_clean)
 
-    print("\n[2/7] Computing velocity features...")
+    print("\n[2/9] Computing velocity features...")
     df = compute_velocity_features(df)
 
-    print("\n[3/7] Computing subscriber-normalized metrics...")
+    print("\n[3/9] Computing ratio and baseline-normalized features...")
+    df = compute_ratio_features(df)
+
+    print("\n[4/9] Computing subscriber-normalized metrics...")
     df = compute_subscriber_normalized(df)
 
-    print("\n[4/7] Computing categorical features...")
+    print("\n[5/9] Computing categorical features...")
     df = compute_categorical_features(df)
 
-    print("\n[5/7] Computing text structural features...")
+    print("\n[6/9] Computing text structural features...")
     df = compute_text_features(df)
 
-    print("\n[6/7] Computing temporal features...")
+    print("\n[7/9] Computing temporal features...")
     df = compute_temporal_features(df)
 
-    print("\n[7/7] Computing duration features...")
+    print("\n[8/9] Computing duration features...")
     df = compute_duration_features(df)
+
+    print("\n[9/9] Computing thumbnail features...")
+    df = compute_thumbnail_features(df)
 
     print(f"\n{'=' * 60}")
     print(f"Modeling table: {df.shape[0]} rows × {df.shape[1]} columns")
