@@ -29,6 +29,7 @@ import os
 import json
 import joblib
 import numpy as np
+import pandas as pd
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any
@@ -363,3 +364,48 @@ def list_models():
         if meta.get('notes'):
             print(f"    Notes: {meta['notes']}")
         print()
+
+
+def compare_models() -> pd.DataFrame:
+    """
+    Load all saved model metadata from GCS and return a comparison DataFrame.
+
+    Columns: version, model_type, data_snapshot, training_date,
+             real_rows, synth_rows, accuracy, roc_auc,
+             precision_above, recall_above, f1_above,
+             precision_below, recall_below, f1_below
+
+    Usage:
+        df_comparison = compare_models()
+        df_comparison.style.highlight_max(color='#d4edda')
+    """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+    blobs = list(bucket.list_blobs(prefix="models/"))
+    meta_blobs = [b for b in blobs if b.name.endswith("metadata.json")]
+
+    rows = []
+    for mb in sorted(meta_blobs, key=lambda b: b.name):
+        meta = json.loads(mb.download_as_text())
+        r  = meta.get('result', {})
+        td = meta.get('training_data', {})
+        rows.append({
+            'version':        meta.get('version', '?'),
+            'model_type':     meta.get('config', {}).get('model_type', '?'),
+            'data_snapshot':  meta.get('data_snapshot', '?'),
+            'training_date':  meta.get('training_date', '')[:10],
+            'real_rows':      td.get('real_train_rows', None),
+            'synth_rows':     td.get('synthetic_train_rows', None),
+            'accuracy':       r.get('accuracy', None),
+            'roc_auc':        r.get('roc_auc', None),
+            'precision_above': r.get('precision_above', None),
+            'recall_above':    r.get('recall_above', None),
+            'f1_above':        r.get('f1_above', None),
+            'precision_below': r.get('precision_below', None),
+            'recall_below':    r.get('recall_below', None),
+            'f1_below':        r.get('f1_below', None),
+        })
+
+    df = pd.DataFrame(rows).set_index('version')
+    print(f"Loaded {len(df)} model snapshots")
+    return df
