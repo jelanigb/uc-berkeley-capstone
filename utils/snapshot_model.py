@@ -239,20 +239,24 @@ def save_model(
     result: ModelResult,
     config: ModelConfig,
     notes: str = "",
+    overwrite: bool = False,
 ):
     """
     Save model artifacts locally and upload to GCS.
 
     Saves: model.pkl, scaler.pkl, feature_cols.json, metadata.json
+
+    overwrite=True skips the existence check. Use when re-running after an
+    interrupted snapshot where some models landed but others did not.
     """
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
 
     existing = list(bucket.list_blobs(prefix=f"models/{version_tag}/"))
-    if existing:
+    if existing and not overwrite:
         raise ValueError(
             f"Model snapshot '{version_tag}' already exists in GCS. "
-            "Use a new version tag or delete the existing snapshot first."
+            "Use a new version tag, pass overwrite=True, or delete the existing snapshot first."
         )
 
     model_dir = f"models/{version_tag}"

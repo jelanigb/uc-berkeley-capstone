@@ -353,19 +353,22 @@ def load_videos(version_tag: str):
     return df, meta
 
 
-def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = ""):
+def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = "", overwrite: bool = False):
     """
     Save an arbitrary DataFrame as a versioned Parquet snapshot to GCS.
     Use this for combined real+synthetic datasets.
     Returns metadata object about the snapshot.
+
+    overwrite=True skips the existence check. Use when re-running after an
+    interrupted snapshot where the data landed but downstream steps (e.g. models) did not.
     """
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
 
-    if _version_tag_exists(bucket, version_tag, "mixed"):
+    if not overwrite and _version_tag_exists(bucket, version_tag, "mixed"):
         raise ValueError(
             f"Mixed snapshot '{version_tag}' already exists in GCS. "
-            "Use a new version tag or delete the existing snapshot first."
+            "Use a new version tag, pass overwrite=True, or delete the existing snapshot first."
         )
 
     now = datetime.utcnow()
