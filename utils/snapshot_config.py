@@ -79,6 +79,7 @@ class SnapshotConfig:
         self.search_n_iter   = 50
         self.search_cv       = 5
         self.search_scoring  = "roc_auc"
+        self.new_grids       = {}        # model class name → param grid override
 
         # Public version strings — set by build()
         self.raw_version        = None
@@ -149,22 +150,29 @@ class SnapshotConfig:
         n_iter: int = 50,
         cv: int = 5,
         scoring: str = "roc_auc",
+        new_grids: dict = None,
     ) -> "SnapshotConfig":
         """
         Enable hyperparameter tuning and configure the search.
 
         Parameters
         ----------
-        strategy : "random" | "halving" | "grid"
-        n_iter   : number of random samples (RandomizedSearchCV only)
-        cv       : cross-validation folds
-        scoring  : sklearn scoring string
+        strategy  : "random" | "halving" | "grid"
+        n_iter    : number of random samples (RandomizedSearchCV only)
+        cv        : cross-validation folds
+        scoring   : sklearn scoring string
+        new_grids : optional dict of {model_class_name: param_grid} overrides.
+                    Any model not listed here uses get_default_param_grid().
+                    Example:
+                        new_grids={'XGBClassifier': {'max_depth': [3, 4, 5],
+                                                     'learning_rate': [0.05, 0.1]}}
         """
         self.flags_["tune"] = True
         self.search_strategy = strategy
         self.search_n_iter   = n_iter
         self.search_cv       = cv
         self.search_scoring  = scoring
+        self.new_grids       = new_grids or {}
         return self
 
     def preset(self, name: str) -> "SnapshotConfig":
