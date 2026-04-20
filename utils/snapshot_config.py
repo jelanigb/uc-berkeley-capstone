@@ -57,6 +57,9 @@ DEFAULT_XGB_PARAMS_ = {
     'n_estimators': 500, 'max_depth': 6, 'learning_rate': 0.1,
     'subsample': 0.8, 'colsample_bytree': 0.8, 'min_child_weight': 5,
 }
+DEFAULT_ENSEMBLE_PARAMS_ = {
+    'voting': 'soft',
+}
 
 # Default state used when no versions.json exists in GCS yet
 DEFAULT_STATE_ = {
@@ -80,6 +83,7 @@ class SnapshotConfig:
         self.search_cv       = 5
         self.search_scoring  = "roc_auc"
         self.new_grids       = {}        # model class name → param grid override
+        self.pinned_data_version_ = None # set by use_data_version()
 
         # Public version strings — set by build()
         self.raw_version        = None
@@ -175,6 +179,23 @@ class SnapshotConfig:
         self.new_grids       = new_grids or {}
         return self
 
+    def use_data_version(self, version: str) -> "SnapshotConfig":
+        """Pin raw/mixed versions to an existing data snapshot.
+
+        Use when training new models against a prior data snapshot — model and
+        hyperparam versions will still bump based on other active flags.
+
+        Parameters
+        ----------
+        version : str
+            Existing data version, e.g. "3.1" or "v3.1". The raw and mixed
+            tags are built using the current raw_suffix and mixed_suffix from
+            state (so this assumes those suffixes match the pinned version's
+            suffixes — the common case).
+        """
+        self.pinned_data_version_ = str(version).lstrip('v').strip()
+        return self
+
     def preset(self, name: str) -> "SnapshotConfig":
         """
         Apply a named preset. See module docstring for available presets.
@@ -206,7 +227,17 @@ class SnapshotConfig:
           - Raw snapshot active → major bump (X.Y → X+1.0)
           - Any other flag active → minor bump (X.Y → X.Y+1)
           - No flags active → version unchanged (dry run)
+
+        If use_data_version() was called, raw_version and mixed_version are
+        pinned to that existing snapshot instead of following the bump.
         """
+        if self.pinned_data_version_ and (self.flags_["raw"] or self.flags_["mixed"]):
+            raise ValueError(
+                f"Cannot use_data_version('{self.pinned_data_version_}') with raw/mixed "
+                "snapshot flags — pinning means reusing an existing snapshot, so enabling "
+                "those flags would overwrite it."
+            )
+
         current = self.state_["version"]
         major, minor = self.parse_version_(current)
         any_active = any(self.flags_.values())
@@ -221,8 +252,9 @@ class SnapshotConfig:
         raw_sfx   = self.state_["raw_suffix"]
         mixed_sfx = self.state_["mixed_suffix"]
 
-        self.raw_version        = f"v{new_version}_{raw_sfx}"
-        self.mixed_version      = f"v{new_version}_{mixed_sfx}"
+        data_version = self.pinned_data_version_ or new_version
+        self.raw_version        = f"v{data_version}_{raw_sfx}"
+        self.mixed_version      = f"v{data_version}_{mixed_sfx}"
         self.model_version      = f"v{new_version}"
         self.hyperparam_version = f"v{new_version}"
         self.new_version_       = new_version
@@ -232,6 +264,8 @@ class SnapshotConfig:
         print("\nSnapshotConfig ready:")
         print(f"  Active flags      : {active if active else ['none (dry run)']}")
         print(f"  Version           : v{current} → v{new_version}")
+        if self.pinned_data_version_:
+            print(f"  Data version      : pinned to v{self.pinned_data_version_}")
         print(f"  raw_version       : {self.raw_version}")
         print(f"  mixed_version     : {self.mixed_version}")
         print(f"  model_version     : {self.model_version}")

@@ -210,6 +210,22 @@ class ModelConfig:
         )
 
     @classmethod
+    def for_voting_ensemble(cls, model):
+        """Extract config from a fitted VotingClassifier.
+
+        Stores only estimator names, voting mode, and weights — not the nested
+        estimator objects themselves, which aren't JSON-serializable.
+        """
+        return cls(
+            model_type="VotingClassifier",
+            hyperparameters={
+                "voting": model.voting,
+                "estimators": [name for name, _ in model.estimators],
+                "weights": list(model.weights) if model.weights is not None else None,
+            },
+        )
+
+    @classmethod
     def from_model(cls, model):
         """Auto-detect model type and extract config."""
         class_name = type(model).__name__
@@ -220,6 +236,8 @@ class ModelConfig:
             return cls.for_random_forest(model)
         elif class_name == 'XGBClassifier':
             return cls.for_xgboost(model)
+        elif class_name == 'VotingClassifier':
+            return cls.for_voting_ensemble(model)
         else:
             # Generic fallback: capture what we can from get_params
             params = model.get_params() if hasattr(model, 'get_params') else {}
