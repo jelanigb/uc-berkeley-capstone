@@ -7,14 +7,14 @@ hyperparameters — each with its own major.minor counter in GCS at
 
 Bump rules (summary):
     Base Data
-      .snapshot_raw() / .snapshot_mixed()        → data minor bump (new pull, same schema)
-      .snapshot_schema_change()                  → data major bump (columns changed)
+      .snapshot_raw() / .snapshot_final()         → data minor bump (new pull, same schema)
+      .snapshot_schema_change()                   → data major bump (columns changed)
     Model
-      .snapshot_models()                         → model minor bump (props / hyperparams changed)
-      .snapshot_models_new_data()                → model major bump (retrained on new data)
+      .snapshot_models()                          → model minor bump (props / hyperparams changed)
+      .snapshot_models_new_data()                 → model major bump (retrained on new data)
     Hyperparameters
-      .snapshot_hyperparams()                    → hyperparams minor bump (values tweaked)
-      .snapshot_hyperparams_new_grid()           → hyperparams major bump (new param added to grid)
+      .snapshot_hyperparams()                     → hyperparams minor bump (values tweaked)
+      .snapshot_hyperparams_new_grid()            → hyperparams major bump (new param added to grid)
 
 Typical usage (notebook config cell):
 
@@ -46,8 +46,8 @@ VERSIONS_BLOB_ = "config/versions.json"
 PRESETS_ = {
     "dry_run":             [],
     "model_tuning":        ["tune", "models", "hyperparams"],
-    "feature_engineering": ["mixed", "tune", "models", "hyperparams"],
-    "new_raw_data":        ["raw", "mixed", "tune", "models_new_data", "hyperparams"],
+    "feature_engineering": ["final", "tune", "models", "hyperparams"],
+    "new_raw_data":        ["raw", "final", "tune", "models_new_data", "hyperparams"],
 }
 
 # Default hyperparameters — used when no GCS hyperparam snapshot exists yet
@@ -73,7 +73,7 @@ DEFAULT_STATE_ = {
         "major":        3,
         "minor":        1,
         "raw_suffix":   "real",
-        "mixed_suffix": "mixed_80real",
+        "final_suffix": "mixed_80real",
     },
     "model":       {"major": 3, "minor": 1},
     "hyperparams": {"major": 1, "minor": 0},
@@ -87,7 +87,7 @@ class SnapshotConfig:
     def __init__(self, state: dict):
         self.state_ = state
         self.flags_ = {k: False for k in [
-            "raw", "mixed", "data_major",
+            "raw", "final", "data_major",
             "models", "model_major",
             "hyperparams", "hyperparams_major",
             "tune",
@@ -111,7 +111,7 @@ class SnapshotConfig:
 
         # Public version strings — set by build()
         self.raw_version        = None
-        self.mixed_version      = None
+        self.final_version      = None
         self.model_version      = None
         self.hyperparam_version = None
 
@@ -126,8 +126,10 @@ class SnapshotConfig:
 
         Handles one-time migration from the legacy flat-schema versions.json
         (single `"version"` key) to the new nested schema with independent
-        data/model/hyperparams counters. The migration runs in-memory only;
-        GCS is rewritten on the next commit().
+        data/model/hyperparams counters. Also renames the legacy
+        `mixed_suffix` key to `final_suffix` on nested schemas written by
+        older versions of this module. Migrations run in-memory only; GCS
+        is rewritten on the next commit().
         """
         gcs_client = storage.Client(project=PROJECT_ID)
         bucket = gcs_client.bucket(BUCKET_NAME)
@@ -140,6 +142,12 @@ class SnapshotConfig:
                 print(
                     "Migrated legacy versions.json → nested schema "
                     "(data/model/hyperparams). Next commit() will persist the new shape."
+                )
+            elif "data" in state and "mixed_suffix" in state["data"] and "final_suffix" not in state["data"]:
+                state["data"]["final_suffix"] = state["data"].pop("mixed_suffix")
+                print(
+                    "Renamed data.mixed_suffix → data.final_suffix. "
+                    "Next commit() will persist the new key name."
                 )
         else:
             state = copy.deepcopy(DEFAULT_STATE_)
@@ -154,7 +162,7 @@ class SnapshotConfig:
         print(
             f"SnapshotConfig loaded:\n"
             f"  data:        v{d['major']}.{d['minor']} "
-            f"(raw_suffix='{d['raw_suffix']}', mixed_suffix='{d['mixed_suffix']}')\n"
+            f"(raw_suffix='{d['raw_suffix']}', final_suffix='{d['final_suffix']}')\n"
             f"  model:       v{m['major']}.{m['minor']}\n"
             f"  hyperparams: v{h['major']}.{h['minor']}"
         )
@@ -166,6 +174,7 @@ class SnapshotConfig:
         Convert legacy {"version": "3.1", "raw_suffix": ..., "mixed_suffix": ...}
         to the new nested schema. Data and model inherit the flat version;
         hyperparams bootstraps to v1.0 (starting defaults under the new scheme).
+        The legacy `mixed_suffix` key is renamed to `final_suffix`.
         """
         major, minor = SnapshotConfig.parse_version_(flat["version"])
         return {
@@ -173,7 +182,7 @@ class SnapshotConfig:
                 "major":        major,
                 "minor":        minor,
                 "raw_suffix":   flat.get("raw_suffix",   "real"),
-                "mixed_suffix": flat.get("mixed_suffix", "mixed_80real"),
+                "final_suffix": flat.get("mixed_suffix", "mixed_80real"),
             },
             "model":       {"major": major, "minor": minor},
             "hyperparams": {"major": 1,     "minor": 0},
@@ -192,18 +201,19 @@ class SnapshotConfig:
             self.state_["data"]["raw_suffix"] = suffix
         return self
 
-    def snapshot_mixed(self, suffix: str = None) -> "SnapshotConfig":
-        """Mark mixed (real + synthetic) dataset for snapshotting. Triggers a data minor bump."""
-        self.flags_["mixed"] = True
+    def snapshot_final(self, suffix: str = None) -> "SnapshotConfig":
+        """Mark the final training dataset (feature-engineered, optionally with
+        synthetic rows) for snapshotting. Triggers a data minor bump."""
+        self.flags_["final"] = True
         if suffix:
-            self.state_["data"]["mixed_suffix"] = suffix
+            self.state_["data"]["final_suffix"] = suffix
         return self
 
     def snapshot_schema_change(self) -> "SnapshotConfig":
         """
         Mark this data snapshot as a schema change (different columns). Upgrades
-        any active data write (raw / mixed) to a data major bump with minor = 0.
-        Call alongside .snapshot_raw() and/or .snapshot_mixed().
+        any active data write (raw / final) to a data major bump with minor = 0.
+        Call alongside .snapshot_raw() and/or .snapshot_final().
         """
         self.flags_["data_major"] = True
         return self
@@ -263,7 +273,7 @@ class SnapshotConfig:
         return self
 
     def use_data_version(self, version: str) -> "SnapshotConfig":
-        """Pin raw/mixed versions to an existing data snapshot. Model and
+        """Pin raw/final versions to an existing data snapshot. Model and
         hyperparam versions still bump independently based on their own flags.
 
         Raises if any data-write or schema-change flag is set — pinning means
@@ -298,7 +308,7 @@ class SnapshotConfig:
             )
         dispatch = {
             "raw":             lambda: self.flags_.__setitem__("raw", True),
-            "mixed":           lambda: self.flags_.__setitem__("mixed", True),
+            "final":           lambda: self.flags_.__setitem__("final", True),
             "models":          lambda: self.flags_.__setitem__("models", True),
             "models_new_data": lambda: (self.flags_.__setitem__("models", True),
                                         self.flags_.__setitem__("model_major", True)),
@@ -318,7 +328,7 @@ class SnapshotConfig:
         Compute new version strings for each entity based on active flags.
         Three entities bump independently:
 
-          data:        raw/mixed       → minor; schema_change       → major
+          data:        raw/final       → minor; schema_change       → major
           model:       models          → minor; models_new_data     → major
           hyperparams: hyperparams     → minor; hyperparams_new_grid → major
 
@@ -328,7 +338,7 @@ class SnapshotConfig:
 
         self.new_data_        = self.compute_new_version_(
             current=(self.state_["data"]["major"], self.state_["data"]["minor"]),
-            write_flag=self.flags_["raw"] or self.flags_["mixed"] or self.flags_["data_major"],
+            write_flag=self.flags_["raw"] or self.flags_["final"] or self.flags_["data_major"],
             major_flag=self.flags_["data_major"],
         )
         self.new_model_       = self.compute_new_version_(
@@ -343,14 +353,14 @@ class SnapshotConfig:
         )
 
         raw_sfx   = self.state_["data"]["raw_suffix"]
-        mixed_sfx = self.state_["data"]["mixed_suffix"]
+        final_sfx = self.state_["data"]["final_suffix"]
 
         data_v       = self.pinned_data_version_       or self.new_data_
         model_v      = self.pinned_model_version_      or self.new_model_
         hyperparam_v = self.pinned_hyperparam_version_ or self.new_hyperparams_
 
         self.raw_version        = f"v{data_v[0]}.{data_v[1]}_{raw_sfx}"
-        self.mixed_version      = f"v{data_v[0]}.{data_v[1]}_{mixed_sfx}"
+        self.final_version      = f"v{data_v[0]}.{data_v[1]}_{final_sfx}"
         self.model_version      = f"v{model_v[0]}.{model_v[1]}"
         self.hyperparam_version = f"v{hyperparam_v[0]}.{hyperparam_v[1]}"
         self.built_             = True
@@ -360,10 +370,10 @@ class SnapshotConfig:
 
     def validate_pin_conflicts_(self):
         if self.pinned_data_version_ and (
-            self.flags_["raw"] or self.flags_["mixed"] or self.flags_["data_major"]
+            self.flags_["raw"] or self.flags_["final"] or self.flags_["data_major"]
         ):
             raise ValueError(
-                "Cannot pin data version with raw/mixed/schema_change flags — "
+                "Cannot pin data version with raw/final/schema_change flags — "
                 "pinning reuses an existing snapshot, which those flags would overwrite."
             )
         if self.pinned_model_version_ and self.flags_["models"]:
@@ -408,7 +418,7 @@ class SnapshotConfig:
               + (f"  [pinned → v{self.pinned_hyperparam_version_[0]}.{self.pinned_hyperparam_version_[1]}]"
                  if self.pinned_hyperparam_version_ else ""))
         print(f"  raw_version       : {self.raw_version}")
-        print(f"  mixed_version     : {self.mixed_version}")
+        print(f"  final_version     : {self.final_version}")
         print(f"  model_version     : {self.model_version}")
         print(f"  hyperparam_version: {self.hyperparam_version}")
         if self.flags_["tune"]:
@@ -438,7 +448,7 @@ class SnapshotConfig:
                 "major":        self.new_data_[0],
                 "minor":        self.new_data_[1],
                 "raw_suffix":   self.state_["data"]["raw_suffix"],
-                "mixed_suffix": self.state_["data"]["mixed_suffix"],
+                "final_suffix": self.state_["data"]["final_suffix"],
             },
             "model":       {"major": self.new_model_[0],       "minor": self.new_model_[1]},
             "hyperparams": {"major": self.new_hyperparams_[0], "minor": self.new_hyperparams_[1]},
@@ -471,8 +481,8 @@ class SnapshotConfig:
         return self.flags_["raw"]
 
     @property
-    def take_snapshot_mixed(self) -> bool:
-        return self.flags_["mixed"]
+    def take_snapshot_final(self) -> bool:
+        return self.flags_["final"]
 
     @property
     def take_snapshot_models(self) -> bool:

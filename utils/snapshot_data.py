@@ -26,12 +26,12 @@ def _version_tag_exists(bucket, version_tag: str, snapshot_type: str) -> bool:
 
     snapshot_type options:
       "raw_video"  — BQ video_snapshots pulls (snapshot_video_data)
-      "mixed"      — combined real+synthetic saves (save_snapshot)
+      "final"      — final training dataset saves (save_snapshot)
       "baselines"  — channel baseline pulls (snapshot_baselines)
     """
     prefix_map = {
         "raw_video": f"snapshots/snapshots_{version_tag}_",
-        "mixed":     f"snapshots/snapshots_{version_tag}_",
+        "final":     f"snapshots/snapshots_{version_tag}_",
         "baselines": f"snapshots/baselines_{version_tag}_",
     }
     prefix = prefix_map[snapshot_type]
@@ -365,9 +365,9 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = "", overwrite
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
 
-    if not overwrite and _version_tag_exists(bucket, version_tag, "mixed"):
+    if not overwrite and _version_tag_exists(bucket, version_tag, "final"):
         raise ValueError(
-            f"Mixed snapshot '{version_tag}' already exists in GCS. "
+            f"Final-dataset snapshot '{version_tag}' already exists in GCS. "
             "Use a new version tag, pass overwrite=True, or delete the existing snapshot first."
         )
 
