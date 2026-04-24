@@ -40,8 +40,8 @@ from datetime import datetime
 
 from google.cloud import storage
 
-PROJECT_ID     = "maduros-dolce"
-BUCKET_NAME    = "maduros-dolce-capstone-data"
+PROJECT_ID = "maduros-dolce"
+BUCKET_NAME = "maduros-dolce-capstone-data"
 VERSIONS_BLOB_ = "config/versions.json"
 
 # Default hyperparameters — used when no GCS hyperparam snapshot exists yet
@@ -64,14 +64,14 @@ DEFAULT_ENSEMBLE_PARAMS_ = {
 # Each entity carries its own major.minor counter.
 DEFAULT_STATE_ = {
     "data": {
-        "major":        3,
-        "minor":        1,
-        "raw_suffix":   "real",
+        "major": 3,
+        "minor": 1,
+        "raw_suffix": "real",
         "final_suffix": "mixed_80real",
     },
-    "model":       {"major": 3, "minor": 1},
+    "model": {"major": 3, "minor": 1},
     "hyperparams": {"major": 1, "minor": 0},
-    "last_updated":        None,
+    "last_updated": None,
     "last_snapshot_types": [],
 }
 
@@ -86,30 +86,30 @@ class RunConfig:
             "hyperparams", "hyperparams_major",
             "tune",
         ]}
-        self.built_           = False
-        self.search_strategy  = "random"  # default; override with .tune(strategy=...)
-        self.search_n_iter    = 50
-        self.search_cv        = 5
-        self.search_scoring   = "roc_auc"
-        self.new_grids        = {}        # model class name -> param grid override
+        self.built_ = False
+        self.search_strategy = "random"  # default; override with .tune(strategy=...)
+        self.search_n_iter = 50
+        self.search_cv = 5
+        self.search_scoring = "roc_auc"
+        self.new_grids = {}  # model class name -> param grid override
 
         # Run-wide flags (non-snapshot)
         self.use_synthetic_ = use_synthetic
 
         # Pinning — set by use_*_version methods
-        self.pinned_data_version_       = None
-        self.pinned_model_version_      = None
+        self.pinned_data_version_ = None
+        self.pinned_model_version_ = None
         self.pinned_hyperparam_version_ = None
 
         # Computed new versions (major, minor) per entity — set by build()
-        self.new_data_        = None
-        self.new_model_       = None
+        self.new_data_ = None
+        self.new_model_ = None
         self.new_hyperparams_ = None
 
         # Public version strings — set by build()
-        self.raw_version        = None
-        self.final_version      = None
-        self.model_version      = None
+        self.raw_version = None
+        self.final_version = None
+        self.model_version = None
         self.hyperparam_version = None
 
     # =========================================================================
@@ -183,14 +183,14 @@ class RunConfig:
         major, minor = RunConfig.parse_version_(flat["version"])
         return {
             "data": {
-                "major":        major,
-                "minor":        minor,
-                "raw_suffix":   flat.get("raw_suffix",   "real"),
+                "major": major,
+                "minor": minor,
+                "raw_suffix": flat.get("raw_suffix", "real"),
                 "final_suffix": flat.get("mixed_suffix", "mixed_80real"),
             },
-            "model":       {"major": major, "minor": minor},
-            "hyperparams": {"major": 1,     "minor": 0},
-            "last_updated":        flat.get("last_updated"),
+            "model": {"major": major, "minor": minor},
+            "hyperparams": {"major": 1, "minor": 0},
+            "last_updated": flat.get("last_updated"),
             "last_snapshot_types": flat.get("last_snapshot_types", []),
         }
 
@@ -270,10 +270,10 @@ class RunConfig:
         """
         self.flags_["tune"] = True
         self.search_strategy = strategy
-        self.search_n_iter   = n_iter
-        self.search_cv       = cv
-        self.search_scoring  = scoring
-        self.new_grids       = new_grids or {}
+        self.search_n_iter = n_iter
+        self.search_cv = cv
+        self.search_scoring = scoring
+        self.new_grids = new_grids or {}
         return self
 
     def use_data_version(self, version: str) -> "RunConfig":
@@ -314,12 +314,12 @@ class RunConfig:
         """
         self.validate_pin_conflicts_()
 
-        self.new_data_        = self.compute_new_version_(
+        self.new_data_ = self.compute_new_version_(
             current=(self.state_["data"]["major"], self.state_["data"]["minor"]),
             write_flag=self.flags_["raw"] or self.flags_["final"] or self.flags_["data_major"],
             major_flag=self.flags_["data_major"],
         )
-        self.new_model_       = self.compute_new_version_(
+        self.new_model_ = self.compute_new_version_(
             current=(self.state_["model"]["major"], self.state_["model"]["minor"]),
             write_flag=self.flags_["models"],
             major_flag=self.flags_["model_major"],
@@ -330,18 +330,18 @@ class RunConfig:
             major_flag=self.flags_["hyperparams_major"],
         )
 
-        raw_sfx   = self.state_["data"]["raw_suffix"]
+        raw_sfx = self.state_["data"]["raw_suffix"]
         final_sfx = self.state_["data"]["final_suffix"]
 
-        data_v       = self.pinned_data_version_       or self.new_data_
-        model_v      = self.pinned_model_version_      or self.new_model_
+        data_v = self.pinned_data_version_ or self.new_data_
+        model_v = self.pinned_model_version_ or self.new_model_
         hyperparam_v = self.pinned_hyperparam_version_ or self.new_hyperparams_
 
-        self.raw_version        = f"v{data_v[0]}.{data_v[1]}_{raw_sfx}"
-        self.final_version      = f"v{data_v[0]}.{data_v[1]}_{final_sfx}"
-        self.model_version      = f"v{model_v[0]}.{model_v[1]}"
+        self.raw_version = f"v{data_v[0]}.{data_v[1]}_{raw_sfx}"
+        self.final_version = f"v{data_v[0]}.{data_v[1]}_{final_sfx}"
+        self.model_version = f"v{model_v[0]}.{model_v[1]}"
         self.hyperparam_version = f"v{hyperparam_v[0]}.{hyperparam_v[1]}"
-        self.built_             = True
+        self.built_ = True
 
         self.print_build_summary_()
         return self
@@ -424,14 +424,14 @@ class RunConfig:
 
         new_state = {
             "data": {
-                "major":        self.new_data_[0],
-                "minor":        self.new_data_[1],
-                "raw_suffix":   self.state_["data"]["raw_suffix"],
+                "major": self.new_data_[0],
+                "minor": self.new_data_[1],
+                "raw_suffix": self.state_["data"]["raw_suffix"],
                 "final_suffix": self.state_["data"]["final_suffix"],
             },
-            "model":       {"major": self.new_model_[0],       "minor": self.new_model_[1]},
+            "model": {"major": self.new_model_[0], "minor": self.new_model_[1]},
             "hyperparams": {"major": self.new_hyperparams_[0], "minor": self.new_hyperparams_[1]},
-            "last_updated":        datetime.utcnow().isoformat(),
+            "last_updated": datetime.utcnow().isoformat(),
             "last_snapshot_types": [k for k, v in self.flags_.items() if v],
         }
 
@@ -484,9 +484,9 @@ class RunConfig:
         """Search config dict; read by PipelineFactory when wiring ModelTrainer."""
         return {
             "strategy": self.search_strategy,
-            "n_iter":   self.search_n_iter,
-            "cv":       self.search_cv,
-            "scoring":  self.search_scoring,
+            "n_iter": self.search_n_iter,
+            "cv": self.search_cv,
+            "scoring": self.search_scoring,
         }
 
     # =========================================================================

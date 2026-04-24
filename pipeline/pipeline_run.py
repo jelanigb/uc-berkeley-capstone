@@ -22,35 +22,35 @@ class Stage(Enum):
     Named singular (not `Stages`) to avoid shadowing the `stages` binding
     returned by `PipelineFactory.<scenario>(config)` in the notebook.
     """
-    LOAD     = "load"
-    SPLIT    = "split"
-    EDA_PRE  = "eda_pre"
+    LOAD = "load"
+    SPLIT = "split"
+    EDA_PRE = "eda_pre"
     ENGINEER = "engineer"
     EDA_POST = "eda_post"
-    AUGMENT  = "augment"
-    TRAIN    = "train"
+    AUGMENT = "augment"
+    TRAIN = "train"
     VALIDATE = "validate"
 
 
 # Fields each stage expects to already be populated before it runs.
 REQUIRED_FIELDS_ = {
-    Stage.LOAD:     [],
-    Stage.SPLIT:    ["df_videos"],
-    Stage.EDA_PRE:  ["df_train"],
+    Stage.LOAD: [],
+    Stage.SPLIT: ["df_videos"],
+    Stage.EDA_PRE: ["df_train"],
     Stage.ENGINEER: ["df_train", "df_test", "df_val"],
     Stage.EDA_POST: ["df_model"],
-    Stage.AUGMENT:  ["X_train", "y_train"],
-    Stage.TRAIN:    ["X_train", "y_train", "X_test", "y_test"],
+    Stage.AUGMENT: ["X_train", "y_train"],
+    Stage.TRAIN: ["X_train", "y_train", "X_test", "y_test"],
     Stage.VALIDATE: ["X_val", "y_val"],
 }
 
 SUMMARY_FIELDS_ = [
     "df_videos", "df_baselines", "df_medians",
-    "df_train",  "df_test",      "df_val",
+    "df_train", "df_test", "df_val",
     "df_model",
-    "X_train",   "X_test",       "X_val",
-    "y_train",   "y_test",       "y_val",
-    "models",    "results",
+    "X_train", "X_test", "X_val",
+    "y_train", "y_test", "y_val",
+    "models", "results",
 ]
 
 
@@ -59,23 +59,23 @@ class PipelineRun:
     config: RunConfig
 
     # Raw data (populated by DataLoader)
-    df_videos:    Optional[pd.DataFrame] = None
+    df_videos: Optional[pd.DataFrame] = None
     df_baselines: Optional[pd.DataFrame] = None
-    df_medians:   Optional[pd.DataFrame] = None
+    df_medians: Optional[pd.DataFrame] = None
 
     # Splits (populated by DataSplitter — real data only)
     df_train: Optional[pd.DataFrame] = None   # augmented with synthetic downstream
-    df_test:  Optional[pd.DataFrame] = None   # real data only, always
-    df_val:   Optional[pd.DataFrame] = None   # real data only, locked forever
+    df_test: Optional[pd.DataFrame] = None    # real data only, always
+    df_val: Optional[pd.DataFrame] = None     # real data only, locked forever
 
     # Engineered features (populated by FeatureEngineer)
     df_model: Optional[pd.DataFrame] = None   # engineered train set, real only (EDA)
-    X_train:  Optional[pd.DataFrame] = None
-    X_test:   Optional[pd.DataFrame] = None
-    X_val:    Optional[pd.DataFrame] = None
-    y_train:  Optional[pd.Series]    = None
-    y_test:   Optional[pd.Series]    = None
-    y_val:    Optional[pd.Series]    = None
+    X_train: Optional[pd.DataFrame] = None
+    X_test: Optional[pd.DataFrame] = None
+    X_val: Optional[pd.DataFrame] = None
+    y_train: Optional[pd.Series] = None
+    y_test: Optional[pd.Series] = None
+    y_val: Optional[pd.Series] = None
 
     # Model artifacts (populated by ModelTrainer)
     models: dict = field(default_factory=dict)
@@ -87,7 +87,7 @@ class PipelineRun:
         """Fail fast if the fields required by `stage` are not yet populated."""
         if not isinstance(stage, Stage):
             raise TypeError(
-                f"assert_ready_for expects a Stage enum member, got "
+                f"Exepcted a Stage enum value, got "
                 f"{type(stage).__name__}={stage!r}. "
                 f"Import with `from pipeline.pipeline_run import Stage`."
             )
