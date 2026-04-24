@@ -1,35 +1,36 @@
 """
-SnapshotConfig — builder-pattern orchestrator for all GCS snapshot operations.
+RunConfig — builder-pattern orchestrator for a single pipeline run.
 
-Tracks three independently-versioned entities — base data, model, and
+Carries three independently-versioned entities — base data, model, and
 hyperparameters — each with its own major.minor counter in GCS at
-`config/versions.json`. See docs/versioning.md for the full semantics.
+`config/versions.json`. Also carries run-wide flags consumed by the stage
+classes (e.g. `use_synthetic`, `tune_models`) and the search config consumed
+by `PipelineFactory` when wiring the trainer.
 
 Bump rules (summary):
     Base Data
-      .snapshot_raw() / .snapshot_final()         → data minor bump (new pull, same schema)
-      .snapshot_schema_change()                   → data major bump (columns changed)
+      .snapshot_raw() / .snapshot_final()         -> data minor bump (new pull, same schema)
+      .snapshot_schema_change()                   -> data major bump (columns changed)
     Model
-      .snapshot_models()                          → model minor bump (props / hyperparams changed)
-      .snapshot_models_new_data()                 → model major bump (retrained on new data)
+      .snapshot_models()                          -> model minor bump (props / hyperparams changed)
+      .snapshot_models_new_data()                 -> model major bump (retrained on new data)
     Hyperparameters
-      .snapshot_hyperparams()                     → hyperparams minor bump (values tweaked)
-      .snapshot_hyperparams_new_grid()            → hyperparams major bump (new param added to grid)
+      .snapshot_hyperparams()                     -> hyperparams minor bump (values tweaked)
+      .snapshot_hyperparams_new_grid()            -> hyperparams major bump (new param added to grid)
 
 Typical usage (notebook config cell):
 
-    from utils.snapshot_config import SnapshotConfig
+    from pipeline.run_config import RunConfig
 
     config = (
-        SnapshotConfig.load()
-        .snapshot_models()
+        RunConfig.load(use_synthetic=True)
+        .snapshot_models_new_data()
         .snapshot_hyperparams()
-        .use_data_version("3.1")
         .build()
     )
 
-After all snapshots succeed, call config.commit() to persist the new version
-numbers back to GCS so the next session picks them up automatically.
+After all snapshots succeed, call `config.commit()` to persist the new
+version numbers back to GCS so the next session picks them up automatically.
 """
 
 import copy
@@ -42,13 +43,6 @@ from google.cloud import storage
 PROJECT_ID     = "maduros-dolce"
 BUCKET_NAME    = "maduros-dolce-capstone-data"
 VERSIONS_BLOB_ = "config/versions.json"
-
-PRESETS_ = {
-    "dry_run":             [],
-    "model_tuning":        ["tune", "models", "hyperparams"],
-    "feature_engineering": ["final", "tune", "models", "hyperparams"],
-    "new_raw_data":        ["raw", "final", "tune", "models_new_data", "hyperparams"],
-}
 
 # Default hyperparameters — used when no GCS hyperparam snapshot exists yet
 DEFAULT_LR_PARAMS_ = {
@@ -82,9 +76,9 @@ DEFAULT_STATE_ = {
 }
 
 
-class SnapshotConfig:
+class RunConfig:
 
-    def __init__(self, state: dict):
+    def __init__(self, state: dict, use_synthetic: bool = False):
         self.state_ = state
         self.flags_ = {k: False for k in [
             "raw", "final", "data_major",
@@ -97,7 +91,10 @@ class SnapshotConfig:
         self.search_n_iter    = 50
         self.search_cv        = 5
         self.search_scoring   = "roc_auc"
-        self.new_grids        = {}        # model class name → param grid override
+        self.new_grids        = {}        # model class name -> param grid override
+
+        # Run-wide flags (non-snapshot)
+        self.use_synthetic_ = use_synthetic
 
         # Pinning — set by use_*_version methods
         self.pinned_data_version_       = None
@@ -105,8 +102,8 @@ class SnapshotConfig:
         self.pinned_hyperparam_version_ = None
 
         # Computed new versions (major, minor) per entity — set by build()
-        self.new_data_       = None
-        self.new_model_      = None
+        self.new_data_        = None
+        self.new_model_       = None
         self.new_hyperparams_ = None
 
         # Public version strings — set by build()
@@ -120,9 +117,15 @@ class SnapshotConfig:
     # =========================================================================
 
     @classmethod
-    def load(cls) -> "SnapshotConfig":
+    def load(cls, use_synthetic: bool = False) -> "RunConfig":
         """
         Load current version state from GCS.
+
+        Parameters
+        ----------
+        use_synthetic : bool
+            Whether SyntheticAugmenter should append synthetic rows to the
+            train split. Defaults to False; pass True to enable.
 
         Handles one-time migration from the legacy flat-schema versions.json
         (single `"version"` key) to the new nested schema with independent
@@ -140,13 +143,13 @@ class SnapshotConfig:
             if "version" in state and "data" not in state:
                 state = cls.migrate_flat_to_nested_(state)
                 print(
-                    "Migrated legacy versions.json → nested schema "
+                    "Migrated legacy versions.json -> nested schema "
                     "(data/model/hyperparams). Next commit() will persist the new shape."
                 )
             elif "data" in state and "mixed_suffix" in state["data"] and "final_suffix" not in state["data"]:
                 state["data"]["final_suffix"] = state["data"].pop("mixed_suffix")
                 print(
-                    "Renamed data.mixed_suffix → data.final_suffix. "
+                    "Renamed data.mixed_suffix -> data.final_suffix. "
                     "Next commit() will persist the new key name."
                 )
         else:
@@ -160,13 +163,14 @@ class SnapshotConfig:
         m = state["model"]
         h = state["hyperparams"]
         print(
-            f"SnapshotConfig loaded:\n"
-            f"  data:        v{d['major']}.{d['minor']} "
+            f"RunConfig loaded:\n"
+            f"  data:          v{d['major']}.{d['minor']} "
             f"(raw_suffix='{d['raw_suffix']}', final_suffix='{d['final_suffix']}')\n"
-            f"  model:       v{m['major']}.{m['minor']}\n"
-            f"  hyperparams: v{h['major']}.{h['minor']}"
+            f"  model:         v{m['major']}.{m['minor']}\n"
+            f"  hyperparams:   v{h['major']}.{h['minor']}\n"
+            f"  use_synthetic: {use_synthetic}"
         )
-        return cls(state)
+        return cls(state, use_synthetic=use_synthetic)
 
     @staticmethod
     def migrate_flat_to_nested_(flat: dict) -> dict:
@@ -176,7 +180,7 @@ class SnapshotConfig:
         hyperparams bootstraps to v1.0 (starting defaults under the new scheme).
         The legacy `mixed_suffix` key is renamed to `final_suffix`.
         """
-        major, minor = SnapshotConfig.parse_version_(flat["version"])
+        major, minor = RunConfig.parse_version_(flat["version"])
         return {
             "data": {
                 "major":        major,
@@ -194,14 +198,14 @@ class SnapshotConfig:
     # Builder methods — each returns self for chaining
     # =========================================================================
 
-    def snapshot_raw(self, suffix: str = None) -> "SnapshotConfig":
+    def snapshot_raw(self, suffix: str = None) -> "RunConfig":
         """Mark raw BQ pull for snapshotting. Triggers a data minor bump (same schema)."""
         self.flags_["raw"] = True
         if suffix:
             self.state_["data"]["raw_suffix"] = suffix
         return self
 
-    def snapshot_final(self, suffix: str = None) -> "SnapshotConfig":
+    def snapshot_final(self, suffix: str = None) -> "RunConfig":
         """Mark the final training dataset (feature-engineered, optionally with
         synthetic rows) for snapshotting. Triggers a data minor bump."""
         self.flags_["final"] = True
@@ -209,7 +213,7 @@ class SnapshotConfig:
             self.state_["data"]["final_suffix"] = suffix
         return self
 
-    def snapshot_schema_change(self) -> "SnapshotConfig":
+    def snapshot_schema_change(self) -> "RunConfig":
         """
         Mark this data snapshot as a schema change (different columns). Upgrades
         any active data write (raw / final) to a data major bump with minor = 0.
@@ -218,12 +222,12 @@ class SnapshotConfig:
         self.flags_["data_major"] = True
         return self
 
-    def snapshot_models(self) -> "SnapshotConfig":
+    def snapshot_models(self) -> "RunConfig":
         """Mark model artifacts for snapshotting. Triggers a model minor bump (same data)."""
         self.flags_["models"] = True
         return self
 
-    def snapshot_models_new_data(self) -> "SnapshotConfig":
+    def snapshot_models_new_data(self) -> "RunConfig":
         """Mark model artifacts for snapshotting AND trigger a model major bump
         (retrained on new data). Must be set explicitly — there is no automatic
         upgrade from a data version bump in the same session."""
@@ -231,13 +235,13 @@ class SnapshotConfig:
         self.flags_["model_major"] = True
         return self
 
-    def snapshot_hyperparams(self) -> "SnapshotConfig":
+    def snapshot_hyperparams(self) -> "RunConfig":
         """Mark hyperparameter set for snapshotting. Triggers a hyperparams minor bump
         (existing params, new values)."""
         self.flags_["hyperparams"] = True
         return self
 
-    def snapshot_hyperparams_new_grid(self) -> "SnapshotConfig":
+    def snapshot_hyperparams_new_grid(self) -> "RunConfig":
         """Mark hyperparameter set for snapshotting AND trigger a hyperparams major bump
         (new parameter added to the grid)."""
         self.flags_["hyperparams"] = True
@@ -251,7 +255,7 @@ class SnapshotConfig:
         cv: int = 5,
         scoring: str = "roc_auc",
         new_grids: dict = None,
-    ) -> "SnapshotConfig":
+    ) -> "RunConfig":
         """
         Enable hyperparameter tuning and configure the search.
 
@@ -272,7 +276,7 @@ class SnapshotConfig:
         self.new_grids       = new_grids or {}
         return self
 
-    def use_data_version(self, version: str) -> "SnapshotConfig":
+    def use_data_version(self, version: str) -> "RunConfig":
         """Pin raw/final versions to an existing data snapshot. Model and
         hyperparam versions still bump independently based on their own flags.
 
@@ -282,55 +286,29 @@ class SnapshotConfig:
         self.pinned_data_version_ = self.parse_pinned_version_(version)
         return self
 
-    def use_model_version(self, version: str) -> "SnapshotConfig":
+    def use_model_version(self, version: str) -> "RunConfig":
         """Pin the model version (symmetric with use_data_version). Rarely needed
         outside of overriding an existing model snapshot intentionally."""
         self.pinned_model_version_ = self.parse_pinned_version_(version)
         return self
 
-    def use_hyperparam_version(self, version: str) -> "SnapshotConfig":
+    def use_hyperparam_version(self, version: str) -> "RunConfig":
         """Pin the hyperparams version (symmetric with use_data_version)."""
         self.pinned_hyperparam_version_ = self.parse_pinned_version_(version)
-        return self
-
-    def preset(self, name: str) -> "SnapshotConfig":
-        """
-        Apply a named preset. See PRESETS_ at the top of the module.
-        Can be combined with explicit flag methods.
-
-        Presets default to minor bumps. Chain .snapshot_schema_change() or
-        .snapshot_models_new_data() or .snapshot_hyperparams_new_grid()
-        after to upgrade to major bumps where appropriate.
-        """
-        if name not in PRESETS_:
-            raise ValueError(
-                f"Unknown preset '{name}'. Available: {list(PRESETS_.keys())}"
-            )
-        dispatch = {
-            "raw":             lambda: self.flags_.__setitem__("raw", True),
-            "final":           lambda: self.flags_.__setitem__("final", True),
-            "models":          lambda: self.flags_.__setitem__("models", True),
-            "models_new_data": lambda: (self.flags_.__setitem__("models", True),
-                                        self.flags_.__setitem__("model_major", True)),
-            "hyperparams":     lambda: self.flags_.__setitem__("hyperparams", True),
-            "tune":            lambda: self.flags_.__setitem__("tune", True),
-        }
-        for flag in PRESETS_[name]:
-            dispatch[flag]()
         return self
 
     # =========================================================================
     # Build — computes version strings, does NOT write to GCS
     # =========================================================================
 
-    def build(self) -> "SnapshotConfig":
+    def build(self) -> "RunConfig":
         """
         Compute new version strings for each entity based on active flags.
         Three entities bump independently:
 
-          data:        raw/final       → minor; schema_change       → major
-          model:       models          → minor; models_new_data     → major
-          hyperparams: hyperparams     → minor; hyperparams_new_grid → major
+          data:        raw/final       -> minor; schema_change        -> major
+          model:       models          -> minor; models_new_data      -> major
+          hyperparams: hyperparams     -> minor; hyperparams_new_grid -> major
 
         Pinned versions (via use_*_version()) override the bump for that entity.
         """
@@ -404,23 +382,24 @@ class SnapshotConfig:
         h_cur = (self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"])
 
         def arrow_(cur, new):
-            return f"v{cur[0]}.{cur[1]} → v{new[0]}.{new[1]}" if cur != new else f"v{cur[0]}.{cur[1]} (unchanged)"
+            return f"v{cur[0]}.{cur[1]} -> v{new[0]}.{new[1]}" if cur != new else f"v{cur[0]}.{cur[1]} (unchanged)"
 
-        print("\nSnapshotConfig ready:")
+        print("\nRunConfig ready:")
         print(f"  Active flags      : {active if active else ['none (dry run)']}")
         print(f"  data              : {arrow_(d_cur, self.new_data_)}"
-              + (f"  [pinned → v{self.pinned_data_version_[0]}.{self.pinned_data_version_[1]}]"
+              + (f"  [pinned -> v{self.pinned_data_version_[0]}.{self.pinned_data_version_[1]}]"
                  if self.pinned_data_version_ else ""))
         print(f"  model             : {arrow_(m_cur, self.new_model_)}"
-              + (f"  [pinned → v{self.pinned_model_version_[0]}.{self.pinned_model_version_[1]}]"
+              + (f"  [pinned -> v{self.pinned_model_version_[0]}.{self.pinned_model_version_[1]}]"
                  if self.pinned_model_version_ else ""))
         print(f"  hyperparams       : {arrow_(h_cur, self.new_hyperparams_)}"
-              + (f"  [pinned → v{self.pinned_hyperparam_version_[0]}.{self.pinned_hyperparam_version_[1]}]"
+              + (f"  [pinned -> v{self.pinned_hyperparam_version_[0]}.{self.pinned_hyperparam_version_[1]}]"
                  if self.pinned_hyperparam_version_ else ""))
         print(f"  raw_version       : {self.raw_version}")
         print(f"  final_version     : {self.final_version}")
         print(f"  model_version     : {self.model_version}")
         print(f"  hyperparam_version: {self.hyperparam_version}")
+        print(f"  use_synthetic     : {self.use_synthetic_}")
         if self.flags_["tune"]:
             print(f"  Tuning            : strategy={self.search_strategy}, "
                   f"n_iter={self.search_n_iter}, cv={self.search_cv}, "
@@ -466,7 +445,7 @@ class SnapshotConfig:
         m = new_state["model"]
         h = new_state["hyperparams"]
         print(
-            f"Committed versions.json → "
+            f"Committed versions.json -> "
             f"data v{d['major']}.{d['minor']}, "
             f"model v{m['major']}.{m['minor']}, "
             f"hyperparams v{h['major']}.{h['minor']}"
@@ -497,8 +476,12 @@ class SnapshotConfig:
         return self.flags_["tune"]
 
     @property
+    def use_synthetic(self) -> bool:
+        return self.use_synthetic_
+
+    @property
     def search_config(self) -> dict:
-        """Returns the search config dict suitable for passing to save_hyperparams."""
+        """Search config dict; read by PipelineFactory when wiring ModelTrainer."""
         return {
             "strategy": self.search_strategy,
             "n_iter":   self.search_n_iter,
@@ -521,11 +504,12 @@ class SnapshotConfig:
 
     @staticmethod
     def parse_pinned_version_(version: str) -> tuple:
-        return SnapshotConfig.parse_version_(version)
+        return RunConfig.parse_version_(version)
 
     def __repr__(self) -> str:
         if self.built_:
             active = [k for k, v in self.flags_.items() if v]
-            return (f"SnapshotConfig(data={self.new_data_}, model={self.new_model_}, "
-                    f"hyperparams={self.new_hyperparams_}, active={active})")
-        return "SnapshotConfig(not built — call .build())"
+            return (f"RunConfig(data={self.new_data_}, model={self.new_model_}, "
+                    f"hyperparams={self.new_hyperparams_}, "
+                    f"use_synthetic={self.use_synthetic_}, active={active})")
+        return "RunConfig(not built — call .build())"
