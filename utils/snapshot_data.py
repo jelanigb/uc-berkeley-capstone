@@ -3,9 +3,9 @@ from datetime import datetime
 from google.cloud import bigquery, storage
 import pandas as pd
 
-PROJECT_ID = "maduros-dolce"
+from constants import PROJECT_ID, BUCKET_NAME
+
 DATASET_ID = "capstone_youtube"
-BUCKET_NAME = "maduros-dolce-capstone-data"
 
 # Add this query helper near the top, after the constants
 

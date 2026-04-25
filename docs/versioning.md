@@ -9,7 +9,7 @@ counter in GCS at `config/versions.json`:
 2. **Model** — trained model artifacts (model.pkl, scaler.pkl, metadata, features)
 3. **Hyperparameters** — the param set fed to GridSearch / RandomizedSearch
 
-Each version bumps independently based on which `SnapshotConfig` flags are
+Each version bumps independently based on which `RunConfig` flags are
 set in the notebook run.
 
 ## Versioning Philosophy
@@ -88,21 +88,21 @@ gs://maduros-dolce-capstone-data/
 }
 ```
 
-`SnapshotConfig.load()` auto-migrates two legacy shapes on first run:
+`RunConfig.load()` auto-migrates two legacy shapes on first run:
 (1) the flat schema `{"version": "3.1", ...}` → nested per-entity, and
 (2) the earlier `data.mixed_suffix` key → `data.final_suffix` (a code-side
 rename of the final-dataset suffix). Both migrations are lazy — GCS is only
 rewritten when the next `commit()` runs.
 
-## SnapshotConfig API
+## RunConfig API
 
 The config cell is the only place the user edits between runs. Typical usage:
 
 ```python
-from utils.snapshot_config import SnapshotConfig
+from pipeline.run_config import RunConfig
 
 config = (
-    SnapshotConfig.load()
+    RunConfig.load()
     .snapshot_models()
     .snapshot_hyperparams()
     .use_data_version("3.1")    # reuse existing data, bump only model + hyperparams
@@ -140,24 +140,11 @@ major bump but makes no data write, which is rarely useful.
 Pinning errors if combined with the corresponding write flag (pinning reuses
 an existing snapshot, which a write would overwrite).
 
-### Presets
-
-| Preset                | Flags set                                        | Result                       |
-|-----------------------|--------------------------------------------------|------------------------------|
-| `"dry_run"`           | none                                             | no bumps, reads only         |
-| `"model_tuning"`      | tune + models + hyperparams                      | model minor, hyperparams minor |
-| `"feature_engineering"` | final + tune + models + hyperparams            | data minor, model minor, hyperparams minor |
-| `"new_raw_data"`      | raw + final + tune + models_new_data + hyperparams | data minor, model **major**, hyperparams minor |
-
-Presets default to minor bumps except where noted. Chain
-`.snapshot_schema_change()` / `.snapshot_hyperparams_new_grid()` after a preset
-to upgrade to additional major bumps.
-
 ### Four bump scenarios
 
 ```python
 # (a) Pull fresh data with same schema, retrain on it
-SnapshotConfig.load() \
+RunConfig.load() \
     .snapshot_raw() \
     .snapshot_final() \
     .snapshot_models_new_data() \
@@ -166,7 +153,7 @@ SnapshotConfig.load() \
 # → data v3.1 → v3.2, model v3.1 → v4.0, hyperparams v1.0 → v1.1
 
 # (b) Schema change (new feature column added)
-SnapshotConfig.load() \
+RunConfig.load() \
     .snapshot_raw() \
     .snapshot_final() \
     .snapshot_schema_change() \
@@ -175,14 +162,14 @@ SnapshotConfig.load() \
 # → data v3.1 → v4.0, model v3.1 → v4.0
 
 # (c) Tweak model properties against existing data
-SnapshotConfig.load() \
+RunConfig.load() \
     .snapshot_models() \
     .use_data_version("3.1") \
     .build()
 # → data pinned to v3.1, model v3.1 → v3.2
 
 # (d) Expand hyperparam grid (new param added)
-SnapshotConfig.load() \
+RunConfig.load() \
     .snapshot_hyperparams_new_grid() \
     .tune() \
     .build()

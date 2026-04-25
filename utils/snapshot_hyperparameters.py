@@ -20,8 +20,8 @@ import json
 from datetime import datetime
 from google.cloud import storage
 
-PROJECT_ID  = "maduros-dolce"
-BUCKET_NAME = "maduros-dolce-capstone-data"
+from constants import PROJECT_ID, BUCKET_NAME
+
 GCS_PREFIX_ = "hyperparams"
 
 

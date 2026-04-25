@@ -41,8 +41,7 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
-PROJECT_ID = "maduros-dolce"
-BUCKET_NAME = "maduros-dolce-capstone-data"
+from constants import PROJECT_ID, BUCKET_NAME
 
 
 # =========================================================================
