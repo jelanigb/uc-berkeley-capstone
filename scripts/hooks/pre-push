@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Block `git push` if any unit test fails. Override (rarely) with
+# `git push --no-verify`.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec "$REPO_ROOT/scripts/run_tests.sh"
