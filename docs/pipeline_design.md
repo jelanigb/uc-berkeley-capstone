@@ -28,12 +28,13 @@ pipeline/
 ├── factory.py                  # PipelineFactory + PipelineStages container
 │
 └── stages/
-    ├── data_loader.py          # DataLoader
+    ├── data_loader.py          # DataLoader (BQ for full_run, GCS otherwise)
     ├── data_splitter.py        # DataSplitter (create or load holdout)
     ├── eda.py                  # Module-level plot functions (no class)
     ├── feature_engineer.py     # FeatureEngineerLogic + FeatureEngineer
     ├── synthetic_augmenter.py  # SyntheticAugmenter (train split only)
     ├── model_trainer.py        # ModelTrainerLogic + ModelTrainer
+    ├── model_loader.py         # ModelLoader (load saved models from GCS)
     └── validator.py            # ValidatorLogic + Validator
                                 # RetroValidatorLogic (swappable via DI)
 
@@ -175,17 +176,52 @@ Runs after `FeatureEngineer`, before `ModelTrainer`. Generates synthetic rows vi
 Test and validation splits are never touched. Is a no-op when `config.use_synthetic
 = False`.
 
+### ModelLoader — load saved model artifacts from GCS
+
+Symmetric counterpart to `DataLoader` for model artifacts. Reads the contents of
+`models/<version>/` from GCS — the `.pkl` model file, the `.json` metadata, and
+any sibling artifacts — and populates `run.models` keyed by model name.
+
+The driving requirement is reproducibility: pairing a past model version with a
+past data version must produce identical results, so loading must be a first-class
+pipeline stage (not a side effect inside `Validator`).
+
+**Scenarios that use it:**
+
+- `validate_current` — loads the current model version (`config.model_version`)
+  so `Validator` can score it against the locked validation set without retraining.
+- `retro_validate` — loads each version in `model_versions` so `RetroValidatorLogic`
+  can replay all of them against the same locked validation set.
+- `retrain_existing_data` / `tune_hyperparams` — available for warm-start or
+  baseline-comparison use cases. Wired into the factory but optional in practice;
+  callers that don't need a loaded model simply don't invoke `stages.model_loader.run(run)`.
+
+**Position in the sequence:** runs after `FeatureEngineer` (so `X_val` / `y_val`
+exist) and before `Validator`. Does not depend on `ModelTrainer` and is mutually
+exclusive with it in `validate_current` / `retro_validate`.
+
+`ModelLoader` is documented here for the design SOT; its implementation lands on
+the next coding pass alongside the other not-yet-built stages.
+
 ### PipelineFactory — wiring and scenario assembly
 
 The single place where logic classes are instantiated and injected into stages.
-`PipelineStages` is a dataclass with `Optional` stage fields. When a stage is absent
-for a given scenario, its field is `None`. `PipelineStages` overrides `__getattr__`
-to intercept access to `None` fields and raise a descriptive error:
+`PipelineStages` is a **plain class** (not a dataclass) — when a stage is absent
+for a given scenario, the corresponding attribute is simply not set on the
+instance. Python's `__getattr__` is then invoked on access and raises a
+descriptive error:
 
 ```
 ModelTrainer is not part of this pipeline scenario (validate_current).
 Check your PipelineFactory method.
 ```
+
+Going non-dataclass for two reasons: (1) a dataclass field set to `None` is a
+successful attribute lookup, so `__getattr__` would never fire for it, and
+overriding `__getattribute__` instead carries a real recursion risk; (2)
+`PipelineStages` needs to carry the scenario name so the error message can
+reference the factory method that built it — `scenario` is just an `__init__`
+argument on a plain class.
 
 ```python
 class PipelineFactory:
@@ -220,6 +256,8 @@ class PipelineFactory:
 
 ## Stage Sequence
 
+**Training scenarios** (`full_run`, `retrain_existing_data`, `tune_hyperparams`):
+
 ```
 DataLoader
     ↓
@@ -238,12 +276,29 @@ ModelTrainer            ← trains on X_train (real + synthetic); evaluates on X
 Validator               ← evaluates on X_val (real only, locked); records results
 ```
 
+**Validation-only scenarios** (`validate_current`, `retro_validate`):
+
+```
+DataLoader
+    ↓
+DataSplitter            ← loads existing holdout; writes df_train / df_test / df_val
+    ↓
+FeatureEngineer         ← transforms all three splits (no fit needed beyond train)
+    ↓
+ModelLoader             ← reads model(s) from GCS; populates run.models
+    ↓
+Validator               ← evaluates loaded models on X_val; records results
+```
+
 **BQ vs GCS by scenario:**
 
 - `full_run` only — `DataLoader` reads from BigQuery
 - All other scenarios — `DataLoader` reads from GCS parquet snapshot
 - All scenarios — `DataSplitter` reads holdout IDs from GCS (or creates on first run)
-- `validate_current` / `retro_validate` — `ModelTrainer` absent from `PipelineStages`
+- `validate_current` / `retro_validate` — `ModelLoader` present, `ModelTrainer` absent
+  from `PipelineStages` (accessing `stages.trainer` raises)
+- `full_run` / `retrain_existing_data` / `tune_hyperparams` — `ModelTrainer` present;
+  `ModelLoader` also wired in for optional warm-start / baseline-comparison use
 
 ---
 
@@ -287,11 +342,11 @@ config.commit()
 
 | Scenario | Factory method | BQ load | Stages active | Notes |
 |---|---|---|---|---|
-| Full run (new data) | `full_run` | ✓ | all | Creates holdout on first run ever |
-| Retrain, same data | `retrain_existing_data` | ✗ | all | Loads parquet from GCS |
-| Hyperparameter tuning | `tune_hyperparams` | ✗ | splitter → engineer → augment → train → validate | Search enabled in trainer logic |
-| Validate current models | `validate_current` | ✗ | splitter → engineer → validate | No trainer stage |
-| Replay saved models | `retro_validate` | ✗ | splitter → engineer → validate | `RetroValidatorLogic` injected |
+| Full run (new data) | `full_run` | ✓ | loader → splitter → engineer → augment → trainer → validator (+ model_loader available) | Creates holdout on first run ever |
+| Retrain, same data | `retrain_existing_data` | ✗ | loader → splitter → engineer → augment → trainer → validator (+ model_loader available) | Loads parquet from GCS |
+| Hyperparameter tuning | `tune_hyperparams` | ✗ | loader → splitter → engineer → augment → trainer → validator (+ model_loader available) | Search enabled via `config.tune_models` |
+| Validate current models | `validate_current` | ✗ | loader → splitter → engineer → model_loader → validator | No trainer stage |
+| Replay saved models | `retro_validate` | ✗ | loader → splitter → engineer → model_loader → validator | `RetroValidatorLogic` injected; loads multiple model versions |
 
 ---
 
@@ -359,17 +414,22 @@ class PipelineRun:
 
 ### `pipeline/factory.py`
 ```python
-@dataclass
 class PipelineStages:
-    loader:           Optional[DataLoader]          = None
-    splitter:         Optional[DataSplitter]        = None
-    feature_engineer: Optional[FeatureEngineer]     = None
-    augmenter:        Optional[SyntheticAugmenter]  = None
-    trainer:          Optional[ModelTrainer]         = None
-    validator:        Optional[Validator]            = None
+    """Plain class — absent stages are not set as attributes; __getattr__ raises."""
+
+    VALID_STAGE_NAMES = (
+        "loader", "splitter", "feature_engineer", "augmenter",
+        "trainer", "model_loader", "validator",
+    )
+
+    def __init__(self, scenario: str, **stages):
+        # Sets only the stages provided; absent ones are not attributes at all,
+        # so __getattr__ fires on access and produces a descriptive error.
+        ...
 
     def __getattr__(self, name: str):
-        # Raises descriptive error when a None stage is accessed
+        # Raises descriptive error when an absent stage is accessed.
+        ...
 
 class PipelineFactory:
     @staticmethod
@@ -466,6 +526,32 @@ class ModelTrainer:
     def run(self, run: PipelineRun) -> PipelineRun: ...
 ```
 
+### `pipeline/stages/model_loader.py`
+
+```python
+class ModelLoader:
+    """Loads saved model artifacts from GCS by version string.
+
+    Reads `models/<version>/` from GCS — `.pkl`, `.json`, and any sibling
+    artifacts — and writes the loaded models into `run.models`. Symmetric
+    counterpart to DataLoader.
+    """
+
+    def __init__(
+        self,
+        config: RunConfig,
+        versions: list[str] = None,
+    ):
+        # If `versions` is None, defaults to [config.model_version].
+        # validate_current passes None; retro_validate passes a list.
+        ...
+
+    def run(self, run: PipelineRun) -> PipelineRun:
+        # Populates run.models with {f"{model_name}@{version}": fitted_model}
+        # (single-version case may key by model_name alone — TBD on impl.)
+        ...
+```
+
 ### `pipeline/stages/validator.py`
 ```python
 class ValidatorLogic:
@@ -479,11 +565,15 @@ class ValidatorLogic:
     ) -> dict: ...  # {model_name: metrics_dict}
 
 class RetroValidatorLogic:
-    """Loads saved model versions from GCS and evaluates them against validation set."""
-    def __init__(self, versions: list[str]): ...
+    """Evaluates multiple saved model versions against the validation set.
+
+    Loading is handled upstream by `ModelLoader`; this class consumes the
+    already-populated `run.models` dict and produces a per-version metrics
+    breakdown suitable for cross-version comparison.
+    """
     def run(
         self,
-        models: dict,           # ignored — loads from GCS instead
+        models: dict,           # populated by ModelLoader with multiple versions
         X_val: pd.DataFrame,
         y_val: pd.Series,
         config: RunConfig,
@@ -511,9 +601,18 @@ These are constraints for Claude Code, not design rationale.
   pipeline package.
 
 **PipelineStages absent-stage behavior:**
-- Implement via `__getattr__` override, not by raising in field accessors.
+
+- `PipelineStages` is a plain class, not a dataclass. Stages absent from a given
+  scenario are never set as instance attributes — Python's `__getattr__` then fires
+  on access and raises a descriptive error. Do not use a dataclass with `None`
+  defaults (lookup would succeed and `__getattr__` would never run) and do not
+  override `__getattribute__` (recursion risk).
+- Each instance carries a `scenario: str` attribute (the factory method name) so
+  the error message can reference it.
 - Error message must name the stage and the factory method, e.g.:
   `"ModelTrainer is not part of this pipeline scenario (validate_current). Check your PipelineFactory method."`
+- Validate that all kwargs passed to `__init__` are recognized stage names; reject
+  typos with a clear error rather than silently storing an unknown attribute.
 
 **DataSplitter GCS path:**
 - Bucket: `maduros-dolce-capstone-data`
