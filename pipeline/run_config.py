@@ -37,12 +37,29 @@ import copy
 import json
 import re
 from datetime import datetime
+from enum import Enum
 
 from google.cloud import storage
 
-PROJECT_ID = "maduros-dolce"
-BUCKET_NAME = "maduros-dolce-capstone-data"
+from constants import PROJECT_ID, BUCKET_NAME
+
 VERSIONS_BLOB_ = "config/versions.json"
+
+
+class Flag(Enum):
+    """Internal flag identifiers for `RunConfig.flags_`.
+
+    Local to this module — external callers interact via the
+    `take_snapshot_*` / `tune_models` properties, not the flag dict.
+    """
+    RAW = "raw"
+    FINAL = "final"
+    DATA_MAJOR = "data_major"
+    MODELS = "models"
+    MODEL_MAJOR = "model_major"
+    HYPERPARAMS = "hyperparams"
+    HYPERPARAMS_MAJOR = "hyperparams_major"
+    TUNE = "tune"
 
 # Default hyperparameters — used when no GCS hyperparam snapshot exists yet
 DEFAULT_LR_PARAMS_ = {
@@ -80,12 +97,7 @@ class RunConfig:
 
     def __init__(self, state: dict, use_synthetic: bool = False):
         self.state_ = state
-        self.flags_ = {k: False for k in [
-            "raw", "final", "data_major",
-            "models", "model_major",
-            "hyperparams", "hyperparams_major",
-            "tune",
-        ]}
+        self.flags_ = {f: False for f in Flag}
         self.built_ = False
         self.search_strategy = "random"  # default; override with .tune(strategy=...)
         self.search_n_iter = 50
@@ -200,7 +212,7 @@ class RunConfig:
 
     def snapshot_raw(self, suffix: str = None) -> "RunConfig":
         """Mark raw BQ pull for snapshotting. Triggers a data minor bump (same schema)."""
-        self.flags_["raw"] = True
+        self.flags_[Flag.RAW] = True
         if suffix:
             self.state_["data"]["raw_suffix"] = suffix
         return self
@@ -208,7 +220,7 @@ class RunConfig:
     def snapshot_final(self, suffix: str = None) -> "RunConfig":
         """Mark the final training dataset (feature-engineered, optionally with
         synthetic rows) for snapshotting. Triggers a data minor bump."""
-        self.flags_["final"] = True
+        self.flags_[Flag.FINAL] = True
         if suffix:
             self.state_["data"]["final_suffix"] = suffix
         return self
@@ -219,33 +231,33 @@ class RunConfig:
         any active data write (raw / final) to a data major bump with minor = 0.
         Call alongside .snapshot_raw() and/or .snapshot_final().
         """
-        self.flags_["data_major"] = True
+        self.flags_[Flag.DATA_MAJOR] = True
         return self
 
     def snapshot_models(self) -> "RunConfig":
         """Mark model artifacts for snapshotting. Triggers a model minor bump (same data)."""
-        self.flags_["models"] = True
+        self.flags_[Flag.MODELS] = True
         return self
 
     def snapshot_models_new_data(self) -> "RunConfig":
         """Mark model artifacts for snapshotting AND trigger a model major bump
         (retrained on new data). Must be set explicitly — there is no automatic
         upgrade from a data version bump in the same session."""
-        self.flags_["models"] = True
-        self.flags_["model_major"] = True
+        self.flags_[Flag.MODELS] = True
+        self.flags_[Flag.MODEL_MAJOR] = True
         return self
 
     def snapshot_hyperparams(self) -> "RunConfig":
         """Mark hyperparameter set for snapshotting. Triggers a hyperparams minor bump
         (existing params, new values)."""
-        self.flags_["hyperparams"] = True
+        self.flags_[Flag.HYPERPARAMS] = True
         return self
 
     def snapshot_hyperparams_new_grid(self) -> "RunConfig":
         """Mark hyperparameter set for snapshotting AND trigger a hyperparams major bump
         (new parameter added to the grid)."""
-        self.flags_["hyperparams"] = True
-        self.flags_["hyperparams_major"] = True
+        self.flags_[Flag.HYPERPARAMS] = True
+        self.flags_[Flag.HYPERPARAMS_MAJOR] = True
         return self
 
     def tune(
@@ -268,7 +280,7 @@ class RunConfig:
         new_grids : optional dict of {model_class_name: param_grid} overrides.
                     Any model not listed here uses get_default_param_grid().
         """
-        self.flags_["tune"] = True
+        self.flags_[Flag.TUNE] = True
         self.search_strategy = strategy
         self.search_n_iter = n_iter
         self.search_cv = cv
@@ -316,18 +328,18 @@ class RunConfig:
 
         self.new_data_ = self.compute_new_version_(
             current=(self.state_["data"]["major"], self.state_["data"]["minor"]),
-            write_flag=self.flags_["raw"] or self.flags_["final"] or self.flags_["data_major"],
-            major_flag=self.flags_["data_major"],
+            write_flag=self.flags_[Flag.RAW] or self.flags_[Flag.FINAL] or self.flags_[Flag.DATA_MAJOR],
+            major_flag=self.flags_[Flag.DATA_MAJOR],
         )
         self.new_model_ = self.compute_new_version_(
             current=(self.state_["model"]["major"], self.state_["model"]["minor"]),
-            write_flag=self.flags_["models"],
-            major_flag=self.flags_["model_major"],
+            write_flag=self.flags_[Flag.MODELS],
+            major_flag=self.flags_[Flag.MODEL_MAJOR],
         )
         self.new_hyperparams_ = self.compute_new_version_(
             current=(self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"]),
-            write_flag=self.flags_["hyperparams"],
-            major_flag=self.flags_["hyperparams_major"],
+            write_flag=self.flags_[Flag.HYPERPARAMS],
+            major_flag=self.flags_[Flag.HYPERPARAMS_MAJOR],
         )
 
         raw_sfx = self.state_["data"]["raw_suffix"]
@@ -348,18 +360,18 @@ class RunConfig:
 
     def validate_pin_conflicts_(self):
         if self.pinned_data_version_ and (
-            self.flags_["raw"] or self.flags_["final"] or self.flags_["data_major"]
+            self.flags_[Flag.RAW] or self.flags_[Flag.FINAL] or self.flags_[Flag.DATA_MAJOR]
         ):
             raise ValueError(
                 "Cannot pin data version with raw/final/schema_change flags — "
                 "pinning reuses an existing snapshot, which those flags would overwrite."
             )
-        if self.pinned_model_version_ and self.flags_["models"]:
+        if self.pinned_model_version_ and self.flags_[Flag.MODELS]:
             raise ValueError(
                 "Cannot pin model version while snapshot_models() is active — "
                 "the pinned version would be overwritten."
             )
-        if self.pinned_hyperparam_version_ and self.flags_["hyperparams"]:
+        if self.pinned_hyperparam_version_ and self.flags_[Flag.HYPERPARAMS]:
             raise ValueError(
                 "Cannot pin hyperparam version while snapshot_hyperparams() is active — "
                 "the pinned version would be overwritten."
@@ -376,7 +388,7 @@ class RunConfig:
         return (major, minor + 1)
 
     def print_build_summary_(self):
-        active = [k for k, v in self.flags_.items() if v]
+        active = [k.value for k, v in self.flags_.items() if v]
         d_cur = (self.state_["data"]["major"], self.state_["data"]["minor"])
         m_cur = (self.state_["model"]["major"], self.state_["model"]["minor"])
         h_cur = (self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"])
@@ -400,7 +412,7 @@ class RunConfig:
         print(f"  model_version     : {self.model_version}")
         print(f"  hyperparam_version: {self.hyperparam_version}")
         print(f"  use_synthetic     : {self.use_synthetic_}")
-        if self.flags_["tune"]:
+        if self.flags_[Flag.TUNE]:
             print(f"  Tuning            : strategy={self.search_strategy}, "
                   f"n_iter={self.search_n_iter}, cv={self.search_cv}, "
                   f"scoring={self.search_scoring}")
@@ -432,7 +444,7 @@ class RunConfig:
             "model": {"major": self.new_model_[0], "minor": self.new_model_[1]},
             "hyperparams": {"major": self.new_hyperparams_[0], "minor": self.new_hyperparams_[1]},
             "last_updated": datetime.utcnow().isoformat(),
-            "last_snapshot_types": [k for k, v in self.flags_.items() if v],
+            "last_snapshot_types": [k.value for k, v in self.flags_.items() if v],
         }
 
         gcs_client = storage.Client(project=PROJECT_ID)
@@ -457,23 +469,23 @@ class RunConfig:
 
     @property
     def take_snapshot_raw(self) -> bool:
-        return self.flags_["raw"]
+        return self.flags_[Flag.RAW]
 
     @property
     def take_snapshot_final(self) -> bool:
-        return self.flags_["final"]
+        return self.flags_[Flag.FINAL]
 
     @property
     def take_snapshot_models(self) -> bool:
-        return self.flags_["models"]
+        return self.flags_[Flag.MODELS]
 
     @property
     def take_snapshot_hyperparams(self) -> bool:
-        return self.flags_["hyperparams"]
+        return self.flags_[Flag.HYPERPARAMS]
 
     @property
     def tune_models(self) -> bool:
-        return self.flags_["tune"]
+        return self.flags_[Flag.TUNE]
 
     @property
     def use_synthetic(self) -> bool:
@@ -508,7 +520,7 @@ class RunConfig:
 
     def __repr__(self) -> str:
         if self.built_:
-            active = [k for k, v in self.flags_.items() if v]
+            active = [k.value for k, v in self.flags_.items() if v]
             return (f"RunConfig(data={self.new_data_}, model={self.new_model_}, "
                     f"hyperparams={self.new_hyperparams_}, "
                     f"use_synthetic={self.use_synthetic_}, active={active})")
