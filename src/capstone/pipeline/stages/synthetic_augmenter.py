@@ -42,23 +42,15 @@ from pipeline.stages.feature_engineer import FeatureEngineer
 class SyntheticAugmenter:
     """Stage 6 — generate synth rows, align with X_train, append to train only."""
 
-    DEFAULT_TARGET_REAL_PCT = 0.8
-
     def __init__(
         self,
         config: VersionConfig,
         feature_engineer: FeatureEngineer,
         seed: int = 42,
-        target_real_pct: float = DEFAULT_TARGET_REAL_PCT,
     ):
-        if not (0 < target_real_pct < 1):
-            raise ValueError(
-                f"target_real_pct must be in (0, 1), got {target_real_pct!r}."
-            )
         self.config = config
         self.feature_engineer = feature_engineer
         self.seed = seed
-        self.target_real_pct = target_real_pct
 
     def run(self, run: PipelineRun) -> PipelineRun:
         if not self.config.use_synthetic:
@@ -76,7 +68,7 @@ class SyntheticAugmenter:
         if num_synth <= 0:
             print(
                 f"[SyntheticAugmenter] Computed num_synth={num_synth} "
-                f"(target_real_pct={self.target_real_pct}); skipping."
+                f"(target_real_pct={self.config.target_real_pct}); skipping."
             )
             return run
 
@@ -106,4 +98,4 @@ class SyntheticAugmenter:
 
             synth = floor(real / target_real_pct) - real
         """
-        return math.floor(num_real_rows / self.target_real_pct) - num_real_rows
+        return math.floor(num_real_rows / self.config.target_real_pct) - num_real_rows

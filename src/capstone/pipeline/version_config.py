@@ -45,6 +45,8 @@ from constants import PROJECT_ID, BUCKET_NAME
 
 VERSIONS_BLOB_ = "config/versions.json"
 
+DEFAULT_SYNTHETIC_REAL_PCT_ = 0.8
+
 
 class Flag(Enum):
     """Internal flag identifiers for `VersionConfig.flags_`.
@@ -84,7 +86,6 @@ DEFAULT_STATE_ = {
         "major": 3,
         "minor": 1,
         "raw_suffix": "real",
-        "final_suffix": "mixed_80real",
     },
     "model": {"major": 3, "minor": 1},
     "hyperparams": {"major": 1, "minor": 0},
@@ -95,7 +96,7 @@ DEFAULT_STATE_ = {
 
 class VersionConfig:
 
-    def __init__(self, state: dict, use_synthetic: bool = False):
+    def __init__(self, state: dict, use_synthetic: bool = False, target_real_pct: float = None):
         self.state_ = state
         self.flags_ = {f: False for f in Flag}
         self.built_ = False
@@ -107,6 +108,16 @@ class VersionConfig:
 
         # Run-wide flags (non-snapshot)
         self.use_synthetic_ = use_synthetic
+        if use_synthetic and target_real_pct is None:
+            self.target_real_pct_ = DEFAULT_SYNTHETIC_REAL_PCT_
+        elif use_synthetic:
+            if not (0 < target_real_pct < 1):
+                raise ValueError(
+                    f"target_real_pct must be in (0, 1), got {target_real_pct!r}."
+                )
+            self.target_real_pct_ = target_real_pct
+        else:
+            self.target_real_pct_ = None
 
         # Pinning — set by use_*_version methods
         self.pinned_data_version_ = None
@@ -129,7 +140,7 @@ class VersionConfig:
     # =========================================================================
 
     @classmethod
-    def load(cls, use_synthetic: bool = False) -> "VersionConfig":
+    def load(cls, use_synthetic: bool = False, target_real_pct: float = None) -> "VersionConfig":
         """
         Load current version state from GCS.
 
@@ -174,15 +185,16 @@ class VersionConfig:
         d = state["data"]
         m = state["model"]
         h = state["hyperparams"]
+        _synth_pct = round((target_real_pct or DEFAULT_SYNTHETIC_REAL_PCT_) * 100) if use_synthetic else None
         print(
             f"VersionConfig loaded:\n"
-            f"  data:          v{d['major']}.{d['minor']} "
-            f"(raw_suffix='{d['raw_suffix']}', final_suffix='{d['final_suffix']}')\n"
+            f"  data:          v{d['major']}.{d['minor']} (raw_suffix='{d['raw_suffix']}')\n"
             f"  model:         v{m['major']}.{m['minor']}\n"
             f"  hyperparams:   v{h['major']}.{h['minor']}\n"
             f"  use_synthetic: {use_synthetic}"
+            + (f" (target_real_pct={_synth_pct}%)" if use_synthetic else "")
         )
-        return cls(state, use_synthetic=use_synthetic)
+        return cls(state, use_synthetic=use_synthetic, target_real_pct=target_real_pct)
 
     @staticmethod
     def migrate_flat_to_nested_(flat: dict) -> dict:
@@ -198,7 +210,6 @@ class VersionConfig:
                 "major": major,
                 "minor": minor,
                 "raw_suffix": flat.get("raw_suffix", "real"),
-                "final_suffix": flat.get("mixed_suffix", "mixed_80real"),
             },
             "model": {"major": major, "minor": minor},
             "hyperparams": {"major": 1, "minor": 0},
@@ -343,7 +354,11 @@ class VersionConfig:
         )
 
         raw_sfx = self.state_["data"]["raw_suffix"]
-        final_sfx = self.state_["data"]["final_suffix"]
+        if self.use_synthetic_:
+            real_pct = round(self.target_real_pct_ * 100)
+            final_sfx = f"mixed_{real_pct}real"
+        else:
+            final_sfx = "100real"
 
         data_v = self.pinned_data_version_ or self.new_data_
         model_v = self.pinned_model_version_ or self.new_model_
@@ -439,7 +454,6 @@ class VersionConfig:
                 "major": self.new_data_[0],
                 "minor": self.new_data_[1],
                 "raw_suffix": self.state_["data"]["raw_suffix"],
-                "final_suffix": self.state_["data"]["final_suffix"],
             },
             "model": {"major": self.new_model_[0], "minor": self.new_model_[1]},
             "hyperparams": {"major": self.new_hyperparams_[0], "minor": self.new_hyperparams_[1]},
@@ -490,6 +504,13 @@ class VersionConfig:
     @property
     def use_synthetic(self) -> bool:
         return self.use_synthetic_
+
+    @property
+    def target_real_pct(self) -> float:
+        """Fraction of real rows in the final train mix (e.g. 0.8 = 80% real).
+        None when use_synthetic=False.
+        """
+        return self.target_real_pct_
 
     @property
     def search_config(self) -> dict:

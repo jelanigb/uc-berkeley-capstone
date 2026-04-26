@@ -383,6 +383,104 @@ def list_models():
         print()
 
 
+def save_validation_results(results: dict, config) -> str:
+    """Append a validation run record to models/{model_version}/validation_results.jsonl.
+
+    Each call appends one JSON line so the file grows into a full history
+    of every validation run for that model version. The record is keyed by
+    run_timestamp so runs are distinguishable even with the same data version.
+
+    GCS path: models/{model_version}/validation_results.jsonl
+    """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+
+    model_version = config.model_version
+    data_version = config.raw_version
+    blob_path = f"models/{model_version}/validation_results.jsonl"
+    blob = bucket.blob(blob_path)
+
+    val_rows = next(iter(results.values())).get("val_rows", 0) if results else 0
+    record = {
+        "run_timestamp": datetime.utcnow().isoformat() + "Z",
+        "model_version": model_version,
+        "data_version": data_version,
+        "val_rows": val_rows,
+        "results": results,
+    }
+
+    existing = ""
+    if blob.exists():
+        existing = blob.download_as_text()
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+
+    blob.upload_from_string(
+        existing + json.dumps(record) + "\n",
+        content_type="application/json",
+    )
+
+    gcs_path = f"gs://{BUCKET_NAME}/{blob_path}"
+    print(f"Validation results appended → {gcs_path}")
+    for name, r in results.items():
+        print(f"  {name:<14}  AUC={r['roc_auc']:.4f}  acc={r['accuracy']:.4f}  F1↑={r['f1_above']:.4f}")
+    return gcs_path
+
+
+def load_validation_results(model_version: str = None) -> pd.DataFrame:
+    """Load validation run history from GCS into a flat DataFrame.
+
+    model_version=None loads all versions. Returns one row per
+    (run_timestamp, model_version, model_name) — omits confusion_matrix
+    and top_features (too wide for tabular comparison).
+    """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if model_version:
+        blob_paths = [f"models/{model_version}/validation_results.jsonl"]
+    else:
+        blob_paths = [
+            b.name
+            for b in bucket.list_blobs(prefix="models/")
+            if b.name.endswith("validation_results.jsonl")
+        ]
+
+    rows = []
+    for blob_path in blob_paths:
+        blob = bucket.blob(blob_path)
+        if not blob.exists():
+            continue
+        for line in blob.download_as_text().strip().split("\n"):
+            if not line:
+                continue
+            record = json.loads(line)
+            for model_name, metrics in record["results"].items():
+                row = {
+                    "run_timestamp": record["run_timestamp"],
+                    "model_version": record["model_version"],
+                    "data_version": record["data_version"],
+                    "model_name": model_name,
+                }
+                row.update({
+                    k: v for k, v in metrics.items()
+                    if k not in ("confusion_matrix", "top_features")
+                })
+                rows.append(row)
+
+    if not rows:
+        print("No validation results found.")
+        return pd.DataFrame()
+
+    df = (
+        pd.DataFrame(rows)
+        .set_index(["model_version", "run_timestamp", "model_name"])
+        .sort_index()
+    )
+    print(f"Loaded {len(df)} validation result records")
+    return df
+
+
 def compare_models() -> pd.DataFrame:
     """
     Load all saved model metadata from GCS and return a comparison DataFrame.

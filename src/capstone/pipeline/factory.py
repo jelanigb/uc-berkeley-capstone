@@ -42,6 +42,7 @@ from pipeline.stages.model_loader import ModelLoader
 from pipeline.stages.model_snapshotter import ModelSnapshotter
 from pipeline.stages.hyperparam_snapshotter import HyperparamSnapshotter
 from pipeline.stages.validator import Validator, RetroValidatorLogic
+from pipeline.stages.validation_results_snapshotter import ValidationResultsSnapshotter
 
 
 # Stage attribute names recognized on PipelineStages. Anything not in this
@@ -58,6 +59,7 @@ VALID_STAGE_NAMES_ = (
     "model_snapshotter",
     "model_loader",
     "validator",
+    "validation_results_snapshotter",
 )
 
 
@@ -114,6 +116,7 @@ class PipelineStages:
             "model_snapshotter": "ModelSnapshotter",
             "model_loader": "ModelLoader",
             "validator": "Validator",
+            "validation_results_snapshotter": "ValidationResultsSnapshotter",
         }[attr_name]
 
 
@@ -143,6 +146,7 @@ class PipelineFactory:
             model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
+            validation_results_snapshotter=ValidationResultsSnapshotter(config),
         )
 
     @staticmethod
@@ -165,6 +169,7 @@ class PipelineFactory:
             model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
+            validation_results_snapshotter=ValidationResultsSnapshotter(config),
         )
 
     @staticmethod
@@ -189,6 +194,7 @@ class PipelineFactory:
             model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
+            validation_results_snapshotter=ValidationResultsSnapshotter(config),
         )
 
     @staticmethod
@@ -207,6 +213,7 @@ class PipelineFactory:
             feature_engineer=FeatureEngineer(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
+            validation_results_snapshotter=ValidationResultsSnapshotter(config),
         )
 
     @staticmethod
@@ -229,4 +236,5 @@ class PipelineFactory:
             feature_engineer=FeatureEngineer(config),
             model_loader=ModelLoader(config, versions=model_versions),
             validator=Validator(config, logic=RetroValidatorLogic()),
+            validation_results_snapshotter=ValidationResultsSnapshotter(config),
         )
