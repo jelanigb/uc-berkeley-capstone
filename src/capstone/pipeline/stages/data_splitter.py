@@ -54,7 +54,7 @@ from sklearn.model_selection import train_test_split
 
 from constants import BUCKET_NAME
 from pipeline.pipeline_run import PipelineRun, Stage
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 
 
 class HoldoutStore:

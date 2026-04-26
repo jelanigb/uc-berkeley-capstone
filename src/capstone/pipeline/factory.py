@@ -30,7 +30,7 @@ stages also take per-run arguments (`ModelLoader.versions`, `Validator.logic`)
 which are passed positionally / keyword as appropriate.
 """
 
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 from pipeline.stages.data_loader import DataLoader
 from pipeline.stages.data_splitter import DataSplitter
 from pipeline.stages.feature_engineer import FeatureEngineer

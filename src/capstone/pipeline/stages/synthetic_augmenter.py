@@ -35,7 +35,7 @@ import pandas as pd
 
 from data_processing.synthetic_data import generate_synthetic_data
 from pipeline.pipeline_run import PipelineRun, Stage
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 from pipeline.stages.feature_engineer import FeatureEngineer
 
 

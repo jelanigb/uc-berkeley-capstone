@@ -35,7 +35,7 @@ from sklearn.preprocessing import StandardScaler
 
 from data_processing.feature_engineering import engineer_features
 from pipeline.pipeline_run import PipelineRun, Stage
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 
 
 TARGET_COL_ = "above_baseline"

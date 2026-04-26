@@ -13,7 +13,7 @@ from typing import Optional
 
 import pandas as pd
 
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 
 
 class Stage(Enum):

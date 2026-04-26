@@ -20,7 +20,7 @@ Bump rules (summary):
 
 Typical usage (notebook config cell):
 
-    from pipeline.run_config import VersionConfig
+    from pipeline.version_config import VersionConfig
 
     config = (
         VersionConfig.load(use_synthetic=True)

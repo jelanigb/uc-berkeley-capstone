@@ -35,7 +35,7 @@ from google.cloud import storage
 
 from constants import BUCKET_NAME, PROJECT_ID
 from pipeline.pipeline_run import PipelineRun
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 from utils.snapshot_model import load_model
 
 

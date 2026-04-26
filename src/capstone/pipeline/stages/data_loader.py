@@ -30,7 +30,7 @@ from google.cloud import bigquery
 
 from constants import PROJECT_ID
 from pipeline.pipeline_run import PipelineRun, Stage
-from pipeline.run_config import VersionConfig
+from pipeline.version_config import VersionConfig
 from utils.snapshot_data import (
     BASELINE_QUERY,
     BASELINE_MEDIANS_QUERY,
