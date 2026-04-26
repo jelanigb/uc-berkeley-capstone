@@ -25,14 +25,16 @@ def _version_tag_exists(bucket, version_tag: str, snapshot_type: str) -> bool:
     Check whether a snapshot with this version_tag already exists in GCS.
 
     snapshot_type options:
-      "raw_video"  — BQ video_snapshots pulls (snapshot_video_data)
+      "raw_video"  — BQ video_snapshots pulls (snapshot_video_data / save_video_snapshot)
       "final"      — final training dataset saves (save_snapshot)
-      "baselines"  — channel baseline pulls (snapshot_baselines)
+      "baselines"  — channel baseline pulls (snapshot_baselines / save_baselines_snapshot)
+      "splits"     — per-split parquet saves (save_splits_snapshot)
     """
     prefix_map = {
         "raw_video": f"snapshots/snapshots_{version_tag}_",
         "final":     f"snapshots/snapshots_{version_tag}_",
         "baselines": f"snapshots/baselines_{version_tag}_",
+        "splits":    f"snapshots/splits_{version_tag}_",
     }
     prefix = prefix_map[snapshot_type]
     blobs = list(bucket.list_blobs(prefix=prefix))
@@ -451,5 +453,217 @@ def save_snapshot(df: pd.DataFrame, version_tag: str, notes: str = "", overwrite
     )
     print(f"  Polls: {poll_counts}")
     print(f"  GCS: gs://{BUCKET_NAME}/{gcs_prefix}/{parquet_filename}")
+
+    return metadata
+
+
+def save_video_snapshot(
+    df: pd.DataFrame,
+    version_tag: str,
+    notes: str = "",
+    overwrite: bool = False,
+) -> dict:
+    """
+    Save a pre-loaded df_videos DataFrame to GCS as a versioned parquet snapshot.
+
+    Called by RawSnapshotter after DataLoader has populated run.df_videos.
+    Use snapshot_video_data() if you want to pull-and-save in one step.
+    Raises if the version tag already exists unless overwrite=True.
+    """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if not overwrite and _version_tag_exists(bucket, version_tag, "raw_video"):
+        raise ValueError(
+            f"Video snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
+    now = datetime.utcnow()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+    base_name = f"snapshots_{version_tag}_{len(df)}rows_{timestamp}"
+    parquet_filename = f"{base_name}.parquet"
+    meta_filename = f"{base_name}_meta.json"
+
+    local_parquet = f"/tmp/{parquet_filename}"
+    df.to_parquet(local_parquet, index=False)
+
+    poll_counts = df["poll_label"].value_counts().to_dict() if "poll_label" in df.columns else {}
+    vertical_counts = df["vertical"].value_counts().to_dict() if "vertical" in df.columns else {}
+    tier_counts = df["tier"].value_counts().to_dict() if "tier" in df.columns else {}
+
+    metadata = {
+        "version_tag": version_tag,
+        "snapshot_timestamp": now.isoformat(),
+        "total_rows": len(df),
+        "unique_videos": int(df["video_id"].nunique()) if "video_id" in df.columns else None,
+        "unique_channels": int(df["channel_id"].nunique()) if "channel_id" in df.columns else None,
+        "poll_label_counts": poll_counts,
+        "vertical_counts": vertical_counts,
+        "tier_counts": tier_counts,
+        "date_range": {
+            "earliest_publish": (
+                str(df["published_at"].dropna().min()) if "published_at" in df.columns else ""
+            ),
+            "latest_publish": (
+                str(df["published_at"].dropna().max()) if "published_at" in df.columns else ""
+            ),
+        },
+        "columns": df.columns.tolist(),
+        "parquet_file": f"gs://{BUCKET_NAME}/snapshots/{parquet_filename}",
+        "notes": notes,
+    }
+
+    local_meta = f"/tmp/{meta_filename}"
+    with open(local_meta, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    bucket.blob(f"snapshots/{parquet_filename}").upload_from_filename(local_parquet)
+    bucket.blob(f"snapshots/{meta_filename}").upload_from_filename(local_meta)
+
+    print(f"\n--- Video Snapshot {version_tag} ---")
+    print(f"  Rows: {len(df)}")
+    print(f"  Polls: {poll_counts}")
+    print(f"  GCS: gs://{BUCKET_NAME}/snapshots/{parquet_filename}")
+
+    return metadata
+
+
+def save_baselines_snapshot(
+    df_baselines: pd.DataFrame,
+    df_medians: pd.DataFrame,
+    version_tag: str,
+    notes: str = "",
+    overwrite: bool = False,
+) -> dict:
+    """
+    Save pre-loaded df_baselines and df_medians to GCS.
+
+    Called by RawSnapshotter after DataLoader has populated run.df_baselines
+    and run.df_medians. Use snapshot_baselines() for the pull-and-save variant.
+    Raises if the version tag already exists unless overwrite=True.
+    """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if not overwrite and _version_tag_exists(bucket, version_tag, "baselines"):
+        raise ValueError(
+            f"Baseline snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
+    now = datetime.utcnow()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+
+    baselines_name = f"baselines_{version_tag}_{len(df_baselines)}rows_{timestamp}"
+    local_baselines = f"/tmp/{baselines_name}.parquet"
+    df_baselines.to_parquet(local_baselines, index=False)
+    bucket.blob(f"snapshots/{baselines_name}.parquet").upload_from_filename(local_baselines)
+    print(f"Uploaded gs://{BUCKET_NAME}/snapshots/{baselines_name}.parquet")
+
+    medians_name = f"medians_{version_tag}_{len(df_medians)}rows_{timestamp}"
+    local_medians = f"/tmp/{medians_name}.parquet"
+    df_medians.to_parquet(local_medians, index=False)
+    bucket.blob(f"snapshots/{medians_name}.parquet").upload_from_filename(local_medians)
+    print(f"Uploaded gs://{BUCKET_NAME}/snapshots/{medians_name}.parquet")
+
+    metadata = {
+        "version_tag": version_tag,
+        "snapshot_timestamp": now.isoformat(),
+        "baseline_video_rows": len(df_baselines),
+        "baseline_median_rows": len(df_medians),
+        "unique_channels": int(df_baselines["channel_id"].nunique()),
+        "baselines_file": f"gs://{BUCKET_NAME}/snapshots/{baselines_name}.parquet",
+        "medians_file": f"gs://{BUCKET_NAME}/snapshots/{medians_name}.parquet",
+        "notes": notes,
+    }
+
+    meta_name = f"baselines_{version_tag}_{timestamp}_meta.json"
+    local_meta = f"/tmp/{meta_name}"
+    with open(local_meta, "w") as f:
+        json.dump(metadata, f, indent=2)
+    bucket.blob(f"snapshots/{meta_name}").upload_from_filename(local_meta)
+
+    print(f"\n--- Baseline Snapshot {version_tag} ---")
+    print(
+        f"  Baseline videos: {len(df_baselines)} "
+        f"({df_baselines['channel_id'].nunique()} channels)"
+    )
+    print(f"  Baseline medians: {len(df_medians)}")
+
+    return metadata
+
+
+def save_splits_snapshot(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    X_val: pd.DataFrame,
+    y_val: pd.Series,
+    version_tag: str,
+    notes: str = "",
+    overwrite: bool = False,
+) -> dict:
+    """
+    Save the six per-split modeling artifacts to GCS as separate parquet files.
+
+    Called by FinalSnapshotter after FeatureEngineer (and SyntheticAugmenter).
+    X_train / y_train include synthetic rows if SyntheticAugmenter ran.
+    Raises if the version tag already exists unless overwrite=True.
+
+    GCS paths follow the pattern:
+        snapshots/splits_{version_tag}_{split_name}_{nrows}rows_{timestamp}.parquet
+        snapshots/splits_{version_tag}_{timestamp}_meta.json
+    """
+    gcs_client = storage.Client(project=PROJECT_ID)
+    bucket = gcs_client.bucket(BUCKET_NAME)
+
+    if not overwrite and _version_tag_exists(bucket, version_tag, "splits"):
+        raise ValueError(
+            f"Splits snapshot '{version_tag}' already exists in GCS. "
+            "Use a new version tag or delete the existing snapshot first."
+        )
+
+    now = datetime.utcnow()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+
+    splits = {
+        "X_train": X_train,
+        "y_train": y_train.to_frame(),
+        "X_test": X_test,
+        "y_test": y_test.to_frame(),
+        "X_val": X_val,
+        "y_val": y_val.to_frame(),
+    }
+
+    split_meta = {}
+    for split_name, df in splits.items():
+        filename = f"splits_{version_tag}_{split_name}_{len(df)}rows_{timestamp}.parquet"
+        local_path = f"/tmp/{filename}"
+        df.to_parquet(local_path, index=False)
+        bucket.blob(f"snapshots/{filename}").upload_from_filename(local_path)
+        gcs_uri = f"gs://{BUCKET_NAME}/snapshots/{filename}"
+        split_meta[split_name] = {"rows": len(df), "file": gcs_uri}
+        if df.shape[1] > 1:
+            split_meta[split_name]["cols"] = df.shape[1]
+        print(f"  Uploaded {gcs_uri}")
+
+    metadata = {
+        "version_tag": version_tag,
+        "snapshot_timestamp": now.isoformat(),
+        "splits": split_meta,
+        "notes": notes,
+    }
+
+    meta_filename = f"splits_{version_tag}_{timestamp}_meta.json"
+    local_meta = f"/tmp/{meta_filename}"
+    with open(local_meta, "w") as f:
+        json.dump(metadata, f, indent=2)
+    bucket.blob(f"snapshots/{meta_filename}").upload_from_filename(local_meta)
+
+    print(f"\n--- Splits Snapshot {version_tag} ---")
+    for split_name, info in split_meta.items():
+        print(f"  {split_name}: {info['rows']} rows")
 
     return metadata

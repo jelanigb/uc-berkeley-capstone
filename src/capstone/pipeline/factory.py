@@ -35,8 +35,12 @@ from pipeline.stages.data_loader import DataLoader
 from pipeline.stages.data_splitter import DataSplitter
 from pipeline.stages.feature_engineer import FeatureEngineer
 from pipeline.stages.synthetic_augmenter import SyntheticAugmenter
+from pipeline.stages.raw_snapshotter import RawSnapshotter
+from pipeline.stages.final_snapshotter import FinalSnapshotter
 from pipeline.stages.model_trainer import ModelTrainer
 from pipeline.stages.model_loader import ModelLoader
+from pipeline.stages.model_snapshotter import ModelSnapshotter
+from pipeline.stages.hyperparam_snapshotter import HyperparamSnapshotter
 from pipeline.stages.validator import Validator, RetroValidatorLogic
 
 
@@ -44,10 +48,14 @@ from pipeline.stages.validator import Validator, RetroValidatorLogic
 # set passed to __init__ is a typo and is rejected up front.
 VALID_STAGE_NAMES_ = (
     "loader",
+    "raw_snapshotter",
     "splitter",
     "feature_engineer",
     "augmenter",
+    "final_snapshotter",
     "trainer",
+    "hyperparam_snapshotter",
+    "model_snapshotter",
     "model_loader",
     "validator",
 )
@@ -96,10 +104,14 @@ class PipelineStages:
         for the absent-stage error message."""
         return {
             "loader": "DataLoader",
+            "raw_snapshotter": "RawSnapshotter",
             "splitter": "DataSplitter",
             "feature_engineer": "FeatureEngineer",
             "augmenter": "SyntheticAugmenter",
+            "final_snapshotter": "FinalSnapshotter",
             "trainer": "ModelTrainer",
+            "hyperparam_snapshotter": "HyperparamSnapshotter",
+            "model_snapshotter": "ModelSnapshotter",
             "model_loader": "ModelLoader",
             "validator": "Validator",
         }[attr_name]
@@ -121,10 +133,14 @@ class PipelineFactory:
         return PipelineStages(
             scenario="full_run",
             loader=DataLoader(config, source=DataLoader.SOURCE_BQ),
+            raw_snapshotter=RawSnapshotter(config),
             splitter=DataSplitter(config),
             feature_engineer=feature_engineer,
             augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
+            final_snapshotter=FinalSnapshotter(config),
             trainer=ModelTrainer(config),
+            hyperparam_snapshotter=HyperparamSnapshotter(config),
+            model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
         )
@@ -139,10 +155,14 @@ class PipelineFactory:
         return PipelineStages(
             scenario="retrain_existing_data",
             loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
+            raw_snapshotter=RawSnapshotter(config),
             splitter=DataSplitter(config),
             feature_engineer=feature_engineer,
             augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
+            final_snapshotter=FinalSnapshotter(config),
             trainer=ModelTrainer(config),
+            hyperparam_snapshotter=HyperparamSnapshotter(config),
+            model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
         )
@@ -159,10 +179,14 @@ class PipelineFactory:
         return PipelineStages(
             scenario="tune_hyperparams",
             loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
+            raw_snapshotter=RawSnapshotter(config),
             splitter=DataSplitter(config),
             feature_engineer=feature_engineer,
             augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
+            final_snapshotter=FinalSnapshotter(config),
             trainer=ModelTrainer(config),
+            hyperparam_snapshotter=HyperparamSnapshotter(config),
+            model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
         )
