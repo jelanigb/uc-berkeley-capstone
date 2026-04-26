@@ -35,7 +35,7 @@ from sklearn.preprocessing import StandardScaler
 
 from data_processing.feature_engineering import engineer_features
 from pipeline.pipeline_run import PipelineRun, Stage
-from pipeline.run_config import RunConfig
+from pipeline.run_config import VersionConfig
 
 
 TARGET_COL_ = "above_baseline"
@@ -92,9 +92,9 @@ class FeatureEngineerLogic:
         df_test: pd.DataFrame,
         df_val: pd.DataFrame,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        df_train_eng = self._engineer(df_train, label="train")
-        df_test_eng = self._engineer(df_test, label="test")
-        df_val_eng = self._engineer(df_val, label="val")
+        df_train_eng = self.engineer(df_train, label="train")
+        df_test_eng = self.engineer(df_test, label="test")
+        df_val_eng = self.engineer(df_val, label="val")
         return df_train_eng, df_test_eng, df_val_eng
 
     def feature_cols(self, df: pd.DataFrame) -> list:
@@ -103,7 +103,17 @@ class FeatureEngineerLogic:
         excludes = set(EXCLUDE_COLS_) | set(seven_d)
         return [c for c in df.columns if c not in excludes]
 
-    def _engineer(self, df: pd.DataFrame, label: str) -> pd.DataFrame:
+    def engineer(self, df: pd.DataFrame, label: str = "external") -> pd.DataFrame:
+        """Apply the full engineering chain to a single DataFrame.
+
+        Public so `FeatureEngineer.transform_external` can route synthetic rows
+        through the same chain. Synth rows from `generate_synthetic_data` arrive
+        with most engineered columns already populated; running this chain again
+        is idempotent because each step overwrites engineered columns from the
+        same raw source columns. The categorical encoding + fill-missing steps,
+        however, are *not* applied inside the synth generator — those are the
+        steps that actually align synth with `X_train`.
+        """
         df = self._drop_bad_baselines(df, label=label)
         df = engineer_features(df)
         df = self._encode_categoricals(df)
@@ -150,7 +160,7 @@ class FeatureEngineerLogic:
 class FeatureEngineer:
     """Stage 4 — outer wrapper. Builds X/y and fits the scaler on train."""
 
-    def __init__(self, config: RunConfig, logic: FeatureEngineerLogic = None):
+    def __init__(self, config: VersionConfig, logic: FeatureEngineerLogic = None):
         self.config = config
         self.logic = logic or FeatureEngineerLogic()
         self.feature_cols_: list = []
@@ -180,6 +190,30 @@ class FeatureEngineer:
         # by vertical/tier and inspecting features in original units.
         run.df_model = df_train
         return run
+    def transform_external(
+        self,
+        df: pd.DataFrame,
+        label: str = "external",
+    ) -> tuple[pd.DataFrame, pd.Series]:
+        """Apply already-fitted engineering + scaling to a new DataFrame.
+
+        Used by SyntheticAugmenter to align synth rows with X_train. Routes the
+        df through `FeatureEngineerLogic.engineer` (so categoricals / fill
+        missing apply), splits into X/y, then transforms with the scaler that
+        was fit on real X_train during `run()`. Errors if called before `run()`.
+
+        `fit=False` is critical here — refitting the scaler on synth would
+        destroy the train fit and silently corrupt every downstream prediction.
+        """
+        if self.scaler_ is None:
+            raise RuntimeError(
+                "FeatureEngineer.transform_external called before run() — "
+                "scaler is not fitted yet."
+            )
+        df = self.logic.engineer(df, label=label)
+        X, y = self._split_xy(df)
+        X = self._scale(X, fit=False)
+        return X, y
 
     def _split_xy(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
         return df[self.feature_cols_].copy(), df[TARGET_COL_].copy()

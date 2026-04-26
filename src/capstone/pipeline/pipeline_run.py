@@ -13,7 +13,7 @@ from typing import Optional
 
 import pandas as pd
 
-from pipeline.run_config import RunConfig
+from pipeline.run_config import VersionConfig
 
 
 class Stage(Enum):
@@ -56,7 +56,7 @@ SUMMARY_FIELDS_ = [
 
 @dataclass
 class PipelineRun:
-    config: RunConfig
+    config: VersionConfig
 
     # Raw data (populated by DataLoader)
     df_videos: Optional[pd.DataFrame] = None

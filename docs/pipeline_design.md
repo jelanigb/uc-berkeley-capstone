@@ -8,7 +8,10 @@
 
 The pipeline is restructured around three layers:
 
-- **`RunConfig`** — builder-pattern orchestration config (what to do this run)
+- **`VersionConfig`** — builder-pattern config carrying version intent (which versions
+  to read, which bumps to write) plus run-wide flags (`use_synthetic`, search config).
+  Renamed from `RunConfig` so it isn't confused with `PipelineRun`; the bulk of what it
+  carries is versioning, even though a few non-version flags also live here.
 - **`PipelineRun`** — typed dataclass carrying all state between stages (the data carrier)
 - **Stage classes** — one class per CRISP-DM phase, each responsible for one concern
 
@@ -23,18 +26,22 @@ lives in `.py` files outside the notebook.
 
 ```
 pipeline/
-├── run_config.py               # RunConfig builder (replaces utils/snapshot_config.py)
+├── version_config.py               # VersionConfig builder (replaces utils/snapshot_config.py)
 ├── pipeline_run.py             # PipelineRun dataclass — typed state carrier
 ├── factory.py                  # PipelineFactory + PipelineStages container
 │
 └── stages/
-    ├── data_loader.py          # DataLoader (BQ for full_run, GCS otherwise)
+    ├── data_loader.py          # DataLoader (read-only: BQ for full_run, GCS otherwise)
+    ├── raw_snapshotter.py      # RawSnapshotter (write-side counterpart to DataLoader)
     ├── data_splitter.py        # DataSplitter (create or load holdout)
     ├── eda.py                  # Module-level plot functions (no class)
     ├── feature_engineer.py     # FeatureEngineerLogic + FeatureEngineer
     ├── synthetic_augmenter.py  # SyntheticAugmenter (train split only)
+    ├── final_snapshotter.py    # FinalSnapshotter (writes per-split X/y to GCS)
     ├── model_trainer.py        # ModelTrainerLogic + ModelTrainer
     ├── model_loader.py         # ModelLoader (load saved models from GCS)
+    ├── model_snapshotter.py    # ModelSnapshotter (write-side counterpart to ModelLoader)
+    ├── hyperparam_snapshotter.py # HyperparamSnapshotter (saves search results)
     └── validator.py            # ValidatorLogic + Validator
                                 # RetroValidatorLogic (swappable via DI)
 
@@ -57,7 +64,7 @@ read from and write back to it.
 ```python
 @dataclass
 class PipelineRun:
-    config: RunConfig
+    config: VersionConfig
 
     # Raw data (populated by DataLoader)
     df_videos:      Optional[pd.DataFrame] = None
@@ -111,7 +118,7 @@ class FeatureEngineerLogic:
 
 class FeatureEngineer:
     """Orchestration wrapper — the only thing the notebook imports."""
-    def __init__(self, config: RunConfig, logic: FeatureEngineerLogic = None):
+    def __init__(self, config: VersionConfig, logic: FeatureEngineerLogic = None):
         self.logic = logic or FeatureEngineerLogic()
 
     def run(self, run: PipelineRun) -> PipelineRun:
@@ -127,8 +134,11 @@ class FeatureEngineer:
 ```
 
 `DataLoader` and `DataSplitter` have no `Logic` companion — they are thin by nature.
-`SyntheticAugmenter` is also thin: it delegates to the existing `generate_synthetic_data`
-and `combine_real_and_synthetic` functions in `data_processing/synthetic_data.py`.
+`SyntheticAugmenter` is also thin: it delegates to `generate_synthetic_data` from
+`data_processing/synthetic_data.py` for row generation, then reuses the injected
+`FeatureEngineer.transform_external` method to align the synth rows with `X_train`.
+`combine_real_and_synthetic` is no longer used — the new pipeline appends synth
+to `X_train` / `y_train` directly rather than building a combined real+synth frame.
 `EDA` is a module of plain functions with no class.
 
 ### DataSplitter — three-way stratified holdout
@@ -172,15 +182,35 @@ The 70% non-holdout pool is split 80/20 into train and test on every run.
 ### SyntheticAugmenter — train split only
 
 Runs after `FeatureEngineer`, before `ModelTrainer`. Generates synthetic rows via
-`GaussianCopulaSynthesizer` and appends them to `run.X_train` / `run.y_train` only.
-Test and validation splits are never touched. Is a no-op when `config.use_synthetic
-= False`.
+`GaussianCopulaSynthesizer` (delegates to `data_processing.synthetic_data`) and
+appends them to `run.X_train` / `run.y_train` only. Test and validation splits
+are never touched. Is a no-op when `config.use_synthetic = False`.
+
+**Coupling to `FeatureEngineer`:** synthetic rows must end up shaped exactly like
+the real `X_train` — same engineered columns, same categorical encoding, scaled
+by the same fitted `StandardScaler`. Re-implementing that logic here would risk
+silent drift, so `SyntheticAugmenter` is constructor-injected with the
+`FeatureEngineer` instance and reuses its public `transform_external(df)` method
+to engineer + scale synth rows after generation. The factory is responsible for
+wiring this dependency.
+
+Generation works against `run.df_model` (real, engineered, unscaled — populated by
+`FeatureEngineer` for EDA) since the SDV synthesizer needs the channel and
+baseline context that's already been computed by that stage.
 
 ### ModelLoader — load saved model artifacts from GCS
 
-Symmetric counterpart to `DataLoader` for model artifacts. Reads the contents of
-`models/<version>/` from GCS — the `.pkl` model file, the `.json` metadata, and
-any sibling artifacts — and populates `run.models` keyed by model name.
+Symmetric counterpart to `DataLoader` for model artifacts. Loads the family of
+models tied to a base version string by auto-discovering all
+`models/<base_version>_*/` directories in GCS, then reading each one's `model.pkl`,
+`scaler.pkl`, `feature_cols.json`, and `metadata.json`. Populates `run.models`
+keyed by the per-model suffix (e.g. `{"lr_l1": ..., "rf": ..., "xgb": ...,
+"ensemble": ...}`).
+
+The "base version" pattern is dictated by how `ModelSnapshotter` (via the existing
+`save_model` utility) names artifacts: a single bump produces multiple model
+directories like `v3.1_lr_l1`, `v3.1_rf`, `v3.1_xgb`, `v3.1_ensemble`. Loading
+`v3.1` means loading all four.
 
 The driving requirement is reproducibility: pairing a past model version with a
 past data version must produce identical results, so loading must be a first-class
@@ -188,20 +218,53 @@ pipeline stage (not a side effect inside `Validator`).
 
 **Scenarios that use it:**
 
-- `validate_current` — loads the current model version (`config.model_version`)
-  so `Validator` can score it against the locked validation set without retraining.
-- `retro_validate` — loads each version in `model_versions` so `RetroValidatorLogic`
-  can replay all of them against the same locked validation set.
-- `retrain_existing_data` / `tune_hyperparams` — available for warm-start or
-  baseline-comparison use cases. Wired into the factory but optional in practice;
-  callers that don't need a loaded model simply don't invoke `stages.model_loader.run(run)`.
+- `validate_current` — loads `config.model_version` so `Validator` can score the
+  current family against the locked validation set without retraining.
+- `retro_validate` — loads each base version in `model_versions`, populating
+  `run.models` with all of them so `RetroValidatorLogic` can replay them all
+  against the same locked validation set.
+- `retrain_existing_data` / `tune_hyperparams` — wired into the factory but
+  optional in practice; callers that don't need a loaded model simply don't
+  invoke `stages.model_loader.run(run)`.
 
 **Position in the sequence:** runs after `FeatureEngineer` (so `X_val` / `y_val`
 exist) and before `Validator`. Does not depend on `ModelTrainer` and is mutually
 exclusive with it in `validate_current` / `retro_validate`.
 
-`ModelLoader` is documented here for the design SOT; its implementation lands on
-the next coding pass alongside the other not-yet-built stages.
+### Snapshotter family — write-side counterparts
+
+The pipeline has a symmetric write-side family of stages that persist artifacts to
+GCS, each gated by its corresponding `take_snapshot_*` flag on `VersionConfig`.
+Snapshotters never modify `PipelineRun` state — they read what previous stages
+populated and write it out. When their flag is False, `run()` is a no-op (the
+notebook always calls them; the gate lives inside the stage).
+
+| Snapshotter | Reads from `PipelineRun` | Writes to GCS at | Gate flag |
+|---|---|---|---|
+| `RawSnapshotter` | `df_videos`, `df_baselines`, `df_medians` | `snapshots/snapshots_<raw_version>_*.parquet` and friends | `config.take_snapshot_raw` |
+| `FinalSnapshotter` | `X_train`, `y_train`, `X_test`, `y_test`, `X_val`, `y_val` | six per-split parquet files under `snapshots/<final_version>_*` | `config.take_snapshot_final` |
+| `ModelSnapshotter` | `run.models` (each model + its associated scaler / feature_cols) | `models/<model_version>_<model_name>/` | `config.take_snapshot_models` |
+| `HyperparamSnapshotter` | best params from `run.models` (or from search results) | `hyperparams/<hyperparam_version>/` | `config.take_snapshot_hyperparams` |
+
+**Why per-split for `FinalSnapshotter`:** the old notebook saved one combined
+`df_combined` (real + synthetic, post-engineering). The new pipeline splits
+*before* engineering and augmentation, so there's no longer a single dataframe
+that captures the modeling table. Saving each split separately preserves the
+structural boundary that the pipeline already enforces — synthetic rows live in
+`X_train` only, val is locked, etc. — and lets retro replays load only the parts
+they need (e.g., `X_val` + `y_val` alone for revalidation against an old data version).
+
+**Why these are stages, not utility calls:** the existing `save_*` utilities work,
+but lifting them into stage classes makes the write side composable with the rest
+of the pipeline (one `.run(run)` call per phase, automatic gating, one place to
+centralize logging and error handling). The stages delegate to the existing
+utilities — they don't reimplement the disk/GCS logic.
+
+**Position in the sequence:** each snapshotter sits immediately after the stage
+whose output it persists (see the Stage Sequence section below).
+
+Implementation lands in a future coding pass; this section documents the
+design SOT.
 
 ### PipelineFactory — wiring and scenario assembly
 
@@ -227,25 +290,25 @@ argument on a plain class.
 class PipelineFactory:
 
     @staticmethod
-    def full_run(config: RunConfig) -> PipelineStages:
+    def full_run(config: VersionConfig) -> PipelineStages:
         """Load fresh data from BQ, split, engineer, augment, train, validate."""
 
     @staticmethod
-    def retrain_existing_data(config: RunConfig) -> PipelineStages:
+    def retrain_existing_data(config: VersionConfig) -> PipelineStages:
         """Load from GCS parquet snapshot (no BQ). Re-split, engineer, augment,
         train, validate."""
 
     @staticmethod
-    def tune_hyperparams(config: RunConfig) -> PipelineStages:
+    def tune_hyperparams(config: VersionConfig) -> PipelineStages:
         """Retrain with hyperparameter search enabled on existing data snapshot."""
 
     @staticmethod
-    def validate_current(config: RunConfig) -> PipelineStages:
+    def validate_current(config: VersionConfig) -> PipelineStages:
         """Validation stage only. No trainer — accessing stages.trainer raises."""
 
     @staticmethod
     def retro_validate(
-        config: RunConfig,
+        config: VersionConfig,
         model_versions: list[str],
     ) -> PipelineStages:
         """Reload saved model versions from GCS, replay against fixed validation set.
@@ -259,21 +322,29 @@ class PipelineFactory:
 **Training scenarios** (`full_run`, `retrain_existing_data`, `tune_hyperparams`):
 
 ```
-DataLoader
+DataLoader               ← read-only: BQ for full_run, GCS otherwise
     ↓
-DataSplitter            ← create or load holdout; writes df_train / df_test / df_val
+RawSnapshotter           ← gated by config.take_snapshot_raw; no-op otherwise
     ↓
-EDA (pre-engineering)   ← real data only; individual plot functions, each callable
+DataSplitter             ← create or load holdout; writes df_train / df_test / df_val
     ↓
-FeatureEngineer         ← fits on df_train (real only); transforms all three splits
+EDA (pre-engineering)    ← real data only; individual plot functions, each callable
     ↓
-EDA (post-engineering)  ← real data only; velocity, correlation, scatter plots
+FeatureEngineer          ← fits on df_train (real only); transforms all three splits
     ↓
-SyntheticAugmenter      ← appends synthetic rows to X_train / y_train only
+EDA (post-engineering)   ← real data only; velocity, correlation, scatter plots
     ↓
-ModelTrainer            ← trains on X_train (real + synthetic); evaluates on X_test
+SyntheticAugmenter       ← appends synthetic rows to X_train / y_train only
     ↓
-Validator               ← evaluates on X_val (real only, locked); records results
+FinalSnapshotter         ← gated by config.take_snapshot_final; saves per-split parquet
+    ↓
+ModelTrainer             ← trains on X_train (real + synthetic); evaluates on X_test
+    ↓
+HyperparamSnapshotter    ← gated by config.take_snapshot_hyperparams
+    ↓
+ModelSnapshotter         ← gated by config.take_snapshot_models
+    ↓
+Validator                ← evaluates on X_val (real only, locked); records results
 ```
 
 **Validation-only scenarios** (`validate_current`, `retro_validate`):
@@ -305,16 +376,23 @@ Validator               ← evaluates loaded models on X_val; records results
 ## Notebook Sequencing
 
 ```python
-from pipeline.run_config import RunConfig
+from pipeline.version_config import VersionConfig
 from pipeline.pipeline_run import PipelineRun
 from pipeline.factory import PipelineFactory
 from pipeline.stages import eda
 
-config = RunConfig.load().snapshot_models_new_data().build()
+config = (
+    VersionConfig.load(use_synthetic=True)
+    .snapshot_raw()
+    .snapshot_final()
+    .snapshot_models_new_data()
+    .build()
+)
 run = PipelineRun(config)
 stages = PipelineFactory.full_run(config)
 
 stages.loader.run(run)
+stages.raw_snapshotter.run(run)        # no-op if config.take_snapshot_raw = False
 stages.splitter.run(run)
 run.summary()
 
@@ -329,8 +407,11 @@ stages.feature_engineer.run(run)
 eda.plot_velocity_distributions(run)
 eda.plot_feature_correlations(run)
 
-stages.augmenter.run(run)    # no-op if config.use_synthetic = False
+stages.augmenter.run(run)              # no-op if config.use_synthetic = False
+stages.final_snapshotter.run(run)      # no-op if config.take_snapshot_final = False
 stages.trainer.run(run)
+stages.hyperparam_snapshotter.run(run) # no-op if config.take_snapshot_hyperparams = False
+stages.model_snapshotter.run(run)      # no-op if config.take_snapshot_models = False
 stages.validator.run(run)
 
 config.commit()
@@ -340,36 +421,41 @@ config.commit()
 
 ## Run Scenarios
 
+All training scenarios share the same active stage list — they differ in source
+of truth (BQ vs GCS), what gets snapshotted, and tuning behavior. Snapshotters
+are wired into every training scenario; their gates (`config.take_snapshot_*`)
+decide whether they actually write.
+
 | Scenario | Factory method | BQ load | Stages active | Notes |
 |---|---|---|---|---|
-| Full run (new data) | `full_run` | ✓ | loader → splitter → engineer → augment → trainer → validator (+ model_loader available) | Creates holdout on first run ever |
-| Retrain, same data | `retrain_existing_data` | ✗ | loader → splitter → engineer → augment → trainer → validator (+ model_loader available) | Loads parquet from GCS |
-| Hyperparameter tuning | `tune_hyperparams` | ✗ | loader → splitter → engineer → augment → trainer → validator (+ model_loader available) | Search enabled via `config.tune_models` |
-| Validate current models | `validate_current` | ✗ | loader → splitter → engineer → model_loader → validator | No trainer stage |
+| Full run (new data) | `full_run` | ✓ | loader → raw_snap → splitter → engineer → augment → final_snap → trainer → hyperparam_snap → model_snap → validator (+ model_loader available) | Creates holdout on first run ever |
+| Retrain, same data | `retrain_existing_data` | ✗ | loader → raw_snap → splitter → engineer → augment → final_snap → trainer → hyperparam_snap → model_snap → validator (+ model_loader available) | Loads parquet from GCS |
+| Hyperparameter tuning | `tune_hyperparams` | ✗ | loader → raw_snap → splitter → engineer → augment → final_snap → trainer → hyperparam_snap → model_snap → validator (+ model_loader available) | Search enabled via `config.tune_models` |
+| Validate current models | `validate_current` | ✗ | loader → splitter → engineer → model_loader → validator | No trainer; no snapshotters (read-only) |
 | Replay saved models | `retro_validate` | ✗ | loader → splitter → engineer → model_loader → validator | `RetroValidatorLogic` injected; loads multiple model versions |
 
 ---
 
 ## Interfaces
 
-### `pipeline/run_config.py`
+### `pipeline/version_config.py`
 ```python
-class RunConfig:
+class VersionConfig:
     # Builder methods (all return self)
     @classmethod
-    def load(cls) -> "RunConfig": ...
-    def snapshot_raw(self, suffix: str = None) -> "RunConfig": ...
-    def snapshot_final(self, suffix: str = None) -> "RunConfig": ...
-    def snapshot_schema_change(self) -> "RunConfig": ...
-    def snapshot_models(self) -> "RunConfig": ...
-    def snapshot_models_new_data(self) -> "RunConfig": ...
-    def snapshot_hyperparams(self) -> "RunConfig": ...
-    def snapshot_hyperparams_new_grid(self) -> "RunConfig": ...
+    def load(cls) -> "VersionConfig": ...
+    def snapshot_raw(self, suffix: str = None) -> "VersionConfig": ...
+    def snapshot_final(self, suffix: str = None) -> "VersionConfig": ...
+    def snapshot_schema_change(self) -> "VersionConfig": ...
+    def snapshot_models(self) -> "VersionConfig": ...
+    def snapshot_models_new_data(self) -> "VersionConfig": ...
+    def snapshot_hyperparams(self) -> "VersionConfig": ...
+    def snapshot_hyperparams_new_grid(self) -> "VersionConfig": ...
     def tune(self, strategy: str = "random", n_iter: int = 50,
-             cv: int = 5, scoring: str = "roc_auc") -> "RunConfig": ...
-    def use_data_version(self, version: str) -> "RunConfig": ...
-    def use_hyperparam_version(self, version: str) -> "RunConfig": ...
-    def build(self) -> "RunConfig": ...
+             cv: int = 5, scoring: str = "roc_auc") -> "VersionConfig": ...
+    def use_data_version(self, version: str) -> "VersionConfig": ...
+    def use_hyperparam_version(self, version: str) -> "VersionConfig": ...
+    def build(self) -> "VersionConfig": ...
     def commit(self): ...
 
     # Flag properties
@@ -391,7 +477,7 @@ class RunConfig:
 ```python
 @dataclass
 class PipelineRun:
-    config: RunConfig
+    config: VersionConfig
     df_videos:   Optional[pd.DataFrame] = None
     df_baselines: Optional[pd.DataFrame] = None
     df_medians:  Optional[pd.DataFrame] = None
@@ -418,8 +504,13 @@ class PipelineStages:
     """Plain class — absent stages are not set as attributes; __getattr__ raises."""
 
     VALID_STAGE_NAMES = (
-        "loader", "splitter", "feature_engineer", "augmenter",
-        "trainer", "model_loader", "validator",
+        "loader", "raw_snapshotter",
+        "splitter",
+        "feature_engineer",
+        "augmenter", "final_snapshotter",
+        "trainer", "hyperparam_snapshotter", "model_snapshotter",
+        "model_loader",
+        "validator",
     )
 
     def __init__(self, scenario: str, **stages):
@@ -433,25 +524,31 @@ class PipelineStages:
 
 class PipelineFactory:
     @staticmethod
-    def full_run(config: RunConfig) -> PipelineStages: ...
+    def full_run(config: VersionConfig) -> PipelineStages: ...
     @staticmethod
-    def retrain_existing_data(config: RunConfig) -> PipelineStages: ...
+    def retrain_existing_data(config: VersionConfig) -> PipelineStages: ...
     @staticmethod
-    def tune_hyperparams(config: RunConfig) -> PipelineStages: ...
+    def tune_hyperparams(config: VersionConfig) -> PipelineStages: ...
     @staticmethod
-    def validate_current(config: RunConfig) -> PipelineStages: ...
+    def validate_current(config: VersionConfig) -> PipelineStages: ...
     @staticmethod
-    def retro_validate(config: RunConfig, model_versions: list[str]) -> PipelineStages: ...
+    def retro_validate(config: VersionConfig, model_versions: list[str]) -> PipelineStages: ...
 ```
 
 ### `pipeline/stages/data_loader.py`
 ```python
 class DataLoader:
-    def __init__(self, config: RunConfig): ...
-    def run(self, run: PipelineRun) -> PipelineRun:
-        # full_run: reads from BigQuery (video_snapshots + baselines + medians)
-        # all others: reads from GCS parquet at config.raw_version
-        ...
+    """Read-only. Populates run.df_videos / df_baselines / df_medians.
+
+    BQ vs GCS is decided by `config.scenario`:
+      - full_run                         → BigQuery (video_snapshots + baselines + medians)
+      - retrain_existing_data, tune_*,
+        validate_current, retro_validate → GCS parquet at config.raw_version
+
+    Writing back to GCS is the job of `RawSnapshotter`, not this stage.
+    """
+    def __init__(self, config: VersionConfig): ...
+    def run(self, run: PipelineRun) -> PipelineRun: ...
 ```
 
 ### `pipeline/stages/data_splitter.py`
@@ -459,7 +556,7 @@ class DataLoader:
 class DataSplitter:
     GCS_VALIDATION_IDS_PATH = "splits/validation_ids.json"
 
-    def __init__(self, config: RunConfig, seed: int = 42): ...
+    def __init__(self, config: VersionConfig, seed: int = 42): ...
     def run(self, run: PipelineRun) -> PipelineRun:
         # create path: splits, persists to GCS, populates run.df_train/test/val
         # load path: reads IDs from GCS, partitions, warns if val set shrank
@@ -495,18 +592,42 @@ class FeatureEngineerLogic:
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: ...
 
 class FeatureEngineer:
-    def __init__(self, config: RunConfig, logic: FeatureEngineerLogic = None): ...
+    def __init__(self, config: VersionConfig, logic: FeatureEngineerLogic = None): ...
     def run(self, run: PipelineRun) -> PipelineRun: ...
+    def transform_external(
+        self,
+        df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.Series]:
+        """Apply already-fitted engineering + scaling to a new DataFrame.
+        Used by SyntheticAugmenter to align synth rows with X_train. Errors
+        if called before run() has fit the scaler.
+        """
+        ...
     def _split_xy(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]: ...
 ```
 
 ### `pipeline/stages/synthetic_augmenter.py`
 ```python
 class SyntheticAugmenter:
-    def __init__(self, config: RunConfig, seed: int = 42): ...
+    """Generates synthetic rows from run.df_model, engineers + scales them
+    via the injected FeatureEngineer, and appends to run.X_train / run.y_train.
+
+    Constructor-injected with FeatureEngineer to reuse its fitted scaler and
+    feature_cols — re-implementing those here would risk silent drift.
+    """
+    def __init__(
+        self,
+        config: VersionConfig,
+        feature_engineer: "FeatureEngineer",
+        seed: int = 42,
+    ): ...
+
     def run(self, run: PipelineRun) -> PipelineRun:
         # no-op if config.use_synthetic is False
-        # otherwise: generates synthetic rows, appends to run.X_train / run.y_train only
+        # otherwise:
+        #   1. generate_synthetic_data(run.df_model)
+        #   2. feature_engineer.transform_external(df_synth) → X_synth, y_synth
+        #   3. concat onto run.X_train / run.y_train
         ...
 ```
 
@@ -517,12 +638,12 @@ class ModelTrainerLogic:
         self,
         X_train: pd.DataFrame, y_train: pd.Series,
         X_test: pd.DataFrame,  y_test: pd.Series,
-        config: RunConfig,
+        config: VersionConfig,
     ) -> dict:  # {model_name: fitted_model}
         ...
 
 class ModelTrainer:
-    def __init__(self, config: RunConfig, logic: ModelTrainerLogic = None): ...
+    def __init__(self, config: VersionConfig, logic: ModelTrainerLogic = None): ...
     def run(self, run: PipelineRun) -> PipelineRun: ...
 ```
 
@@ -530,26 +651,69 @@ class ModelTrainer:
 
 ```python
 class ModelLoader:
-    """Loads saved model artifacts from GCS by version string.
+    """Loads families of saved model artifacts from GCS by base version string.
 
-    Reads `models/<version>/` from GCS — `.pkl`, `.json`, and any sibling
-    artifacts — and writes the loaded models into `run.models`. Symmetric
-    counterpart to DataLoader.
+    For each base version (e.g. "v3.1"), auto-discovers all `models/<base>_*/`
+    directories in GCS and loads each. Populates run.models keyed by per-model
+    suffix for the single-version case, or by f"{base_version}/{model_name}"
+    when loading multiple base versions (retro_validate).
     """
 
     def __init__(
         self,
-        config: RunConfig,
+        config: VersionConfig,
         versions: list[str] = None,
     ):
         # If `versions` is None, defaults to [config.model_version].
-        # validate_current passes None; retro_validate passes a list.
+        # validate_current passes None; retro_validate passes a list of base
+        # versions (e.g. ["v3.0", "v3.1", "v3.2"]).
         ...
 
-    def run(self, run: PipelineRun) -> PipelineRun:
-        # Populates run.models with {f"{model_name}@{version}": fitted_model}
-        # (single-version case may key by model_name alone — TBD on impl.)
-        ...
+    def run(self, run: PipelineRun) -> PipelineRun: ...
+```
+
+### `pipeline/stages/raw_snapshotter.py`
+```python
+class RawSnapshotter:
+    """Persists run.df_videos / df_baselines / df_medians to GCS at
+    config.raw_version. No-op when config.take_snapshot_raw is False.
+    Delegates to existing utils.snapshot_data utilities.
+    """
+    def __init__(self, config: VersionConfig): ...
+    def run(self, run: PipelineRun) -> PipelineRun: ...
+```
+
+### `pipeline/stages/final_snapshotter.py`
+```python
+class FinalSnapshotter:
+    """Persists the six modeling artifacts (X_train, y_train, X_test, y_test,
+    X_val, y_val) as separate parquet files at config.final_version, plus a
+    metadata sidecar. No-op when config.take_snapshot_final is False.
+    """
+    def __init__(self, config: VersionConfig): ...
+    def run(self, run: PipelineRun) -> PipelineRun: ...
+```
+
+### `pipeline/stages/model_snapshotter.py`
+```python
+class ModelSnapshotter:
+    """Persists each fitted model in run.models to GCS under
+    models/<model_version>_<model_name>/. No-op when
+    config.take_snapshot_models is False. Delegates to utils.snapshot_model.save_model.
+    """
+    def __init__(self, config: VersionConfig): ...
+    def run(self, run: PipelineRun) -> PipelineRun: ...
+```
+
+### `pipeline/stages/hyperparam_snapshotter.py`
+```python
+class HyperparamSnapshotter:
+    """Persists the hyperparameters used (or discovered via search) at
+    config.hyperparam_version. No-op when config.take_snapshot_hyperparams
+    is False. Delegates to utils.snapshot_hyperparameters.save_hyperparams.
+    """
+    def __init__(self, config: VersionConfig): ...
+    def run(self, run: PipelineRun) -> PipelineRun: ...
 ```
 
 ### `pipeline/stages/validator.py`
@@ -561,7 +725,7 @@ class ValidatorLogic:
         models: dict,
         X_val: pd.DataFrame,
         y_val: pd.Series,
-        config: RunConfig,
+        config: VersionConfig,
     ) -> dict: ...  # {model_name: metrics_dict}
 
 class RetroValidatorLogic:
@@ -576,11 +740,11 @@ class RetroValidatorLogic:
         models: dict,           # populated by ModelLoader with multiple versions
         X_val: pd.DataFrame,
         y_val: pd.Series,
-        config: RunConfig,
+        config: VersionConfig,
     ) -> dict: ...
 
 class Validator:
-    def __init__(self, config: RunConfig, logic: ValidatorLogic = None): ...
+    def __init__(self, config: VersionConfig, logic: ValidatorLogic = None): ...
     def run(self, run: PipelineRun) -> PipelineRun: ...
 ```
 
@@ -591,9 +755,14 @@ class Validator:
 These are constraints for Claude Code, not design rationale.
 
 **File operations:**
-- `utils/snapshot_config.py` → `pipeline/run_config.py` via `git mv`. Rewrite the
+
+- `utils/snapshot_config.py` → `pipeline/version_config.py` via `git mv`. Rewrite the
   contents entirely; preserve the builder pattern and all existing public method names.
   Do not leave a stub or import alias in `utils/`.
+- The intermediate name `pipeline/run_config.py` (used during the early refactor passes)
+  must also be renamed to `pipeline/version_config.py`, with the class renamed
+  `RunConfig` → `VersionConfig`. Update all imports across `pipeline/`, `tests/`, and
+  the notebook. The rename is purely cosmetic; no logic changes.
 - New working notebook: `project_pipeline.ipynb` at the project root. Do not modify
   or delete `data_analysis.ipynb`.
 - `data_collection/` is off-limits. Do not touch any file under that directory.
@@ -619,7 +788,7 @@ These are constraints for Claude Code, not design rationale.
 - Full path: `gs://maduros-dolce-capstone-data/splits/validation_ids.json`
 - Use `google-cloud-storage` (already a project dependency). Do not use `gsutil`.
 
-**RunConfig additions vs. existing SnapshotConfig:**
+**VersionConfig additions vs. existing SnapshotConfig:**
 - Add `use_synthetic: bool = True` as a new flag property.
 - All existing version-bumping logic, GCS read/write, and builder method names must
   be preserved exactly — downstream GCS artifacts depend on the version string format.
@@ -634,12 +803,37 @@ These are constraints for Claude Code, not design rationale.
   etc.) at this stage.
 
 **Existing `data_processing/` functions:**
+
 - `data_processing/feature_engineering.py` and `data_processing/data_cleanup.py`
   are the source of truth for transformation logic. `FeatureEngineerLogic` should
   delegate to these functions, not reimplement them.
 - `data_processing/synthetic_data.py` is the source of truth for synthetic generation.
-  `SyntheticAugmenter` delegates to `generate_synthetic_data` and
-  `combine_real_and_synthetic` from that module.
+  `SyntheticAugmenter` delegates to `generate_synthetic_data` from that module
+  (`combine_real_and_synthetic` is no longer used — the new pipeline appends synth
+  to `X_train` / `y_train` directly via `FeatureEngineer.transform_external`).
+
+**Existing `utils/` snapshot helpers:**
+
+- The Snapshotter family delegates to existing utilities; do not duplicate the
+  GCS / disk logic.
+- `RawSnapshotter` → `utils.snapshot_data.snapshot_video_data` and `snapshot_baselines`.
+- `FinalSnapshotter` → a *new* per-split helper inside `utils.snapshot_data` (the
+  existing `save_snapshot` saves a single combined frame; we now save six per-split
+  parquet files plus a metadata sidecar). Keep `save_snapshot` available for
+  backwards compatibility but do not use it from the new pipeline.
+- `ModelSnapshotter` → `utils.snapshot_model.save_model`, called once per fitted
+  model in `run.models`.
+- `HyperparamSnapshotter` → `utils.snapshot_hyperparameters.save_hyperparams`.
+
+**Snapshotter gating and idempotency:**
+
+- Each snapshotter checks its `config.take_snapshot_*` flag at the top of `run()`
+  and returns immediately when False. The notebook always calls every snapshotter;
+  the gate lives inside the stage so the notebook stays scenario-agnostic.
+- Snapshotters never modify `PipelineRun` state — they only read what previous
+  stages populated and write to GCS.
+- A snapshotter must fail loudly (raise) if its required inputs are missing — e.g.,
+  `ModelSnapshotter` raises if `run.models` is empty when its flag is set.
 
 ---
 
@@ -664,3 +858,8 @@ These are constraints for Claude Code, not design rationale.
   in `eda.py`.
 - **BigQuery access is exclusive to `full_run`.** All other scenarios load from GCS
   parquet, keeping quota consumption predictable and non-BQ runs fast.
+- **Reads and writes are separate stages.** Loaders never write; snapshotters never
+  read external state for transformation. Each loader has a write-side counterpart
+  (DataLoader↔RawSnapshotter, ModelLoader↔ModelSnapshotter) so the symmetry is
+  visible in the stage list and the notebook reads top-to-bottom without scenario
+  branching.

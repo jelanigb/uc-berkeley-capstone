@@ -1,5 +1,5 @@
 """
-RunConfig — builder-pattern orchestrator for a single pipeline run.
+VersionConfig — builder-pattern orchestrator for a single pipeline run.
 
 Carries three independently-versioned entities — base data, model, and
 hyperparameters — each with its own major.minor counter in GCS at
@@ -20,10 +20,10 @@ Bump rules (summary):
 
 Typical usage (notebook config cell):
 
-    from pipeline.run_config import RunConfig
+    from pipeline.run_config import VersionConfig
 
     config = (
-        RunConfig.load(use_synthetic=True)
+        VersionConfig.load(use_synthetic=True)
         .snapshot_models_new_data()
         .snapshot_hyperparams()
         .build()
@@ -47,7 +47,7 @@ VERSIONS_BLOB_ = "config/versions.json"
 
 
 class Flag(Enum):
-    """Internal flag identifiers for `RunConfig.flags_`.
+    """Internal flag identifiers for `VersionConfig.flags_`.
 
     Local to this module — external callers interact via the
     `take_snapshot_*` / `tune_models` properties, not the flag dict.
@@ -93,7 +93,7 @@ DEFAULT_STATE_ = {
 }
 
 
-class RunConfig:
+class VersionConfig:
 
     def __init__(self, state: dict, use_synthetic: bool = False):
         self.state_ = state
@@ -129,7 +129,7 @@ class RunConfig:
     # =========================================================================
 
     @classmethod
-    def load(cls, use_synthetic: bool = False) -> "RunConfig":
+    def load(cls, use_synthetic: bool = False) -> "VersionConfig":
         """
         Load current version state from GCS.
 
@@ -175,7 +175,7 @@ class RunConfig:
         m = state["model"]
         h = state["hyperparams"]
         print(
-            f"RunConfig loaded:\n"
+            f"VersionConfig loaded:\n"
             f"  data:          v{d['major']}.{d['minor']} "
             f"(raw_suffix='{d['raw_suffix']}', final_suffix='{d['final_suffix']}')\n"
             f"  model:         v{m['major']}.{m['minor']}\n"
@@ -192,7 +192,7 @@ class RunConfig:
         hyperparams bootstraps to v1.0 (starting defaults under the new scheme).
         The legacy `mixed_suffix` key is renamed to `final_suffix`.
         """
-        major, minor = RunConfig.parse_version_(flat["version"])
+        major, minor = VersionConfig.parse_version_(flat["version"])
         return {
             "data": {
                 "major": major,
@@ -210,14 +210,14 @@ class RunConfig:
     # Builder methods — each returns self for chaining
     # =========================================================================
 
-    def snapshot_raw(self, suffix: str = None) -> "RunConfig":
+    def snapshot_raw(self, suffix: str = None) -> "VersionConfig":
         """Mark raw BQ pull for snapshotting. Triggers a data minor bump (same schema)."""
         self.flags_[Flag.RAW] = True
         if suffix:
             self.state_["data"]["raw_suffix"] = suffix
         return self
 
-    def snapshot_final(self, suffix: str = None) -> "RunConfig":
+    def snapshot_final(self, suffix: str = None) -> "VersionConfig":
         """Mark the final training dataset (feature-engineered, optionally with
         synthetic rows) for snapshotting. Triggers a data minor bump."""
         self.flags_[Flag.FINAL] = True
@@ -225,7 +225,7 @@ class RunConfig:
             self.state_["data"]["final_suffix"] = suffix
         return self
 
-    def snapshot_schema_change(self) -> "RunConfig":
+    def snapshot_schema_change(self) -> "VersionConfig":
         """
         Mark this data snapshot as a schema change (different columns). Upgrades
         any active data write (raw / final) to a data major bump with minor = 0.
@@ -234,12 +234,12 @@ class RunConfig:
         self.flags_[Flag.DATA_MAJOR] = True
         return self
 
-    def snapshot_models(self) -> "RunConfig":
+    def snapshot_models(self) -> "VersionConfig":
         """Mark model artifacts for snapshotting. Triggers a model minor bump (same data)."""
         self.flags_[Flag.MODELS] = True
         return self
 
-    def snapshot_models_new_data(self) -> "RunConfig":
+    def snapshot_models_new_data(self) -> "VersionConfig":
         """Mark model artifacts for snapshotting AND trigger a model major bump
         (retrained on new data). Must be set explicitly — there is no automatic
         upgrade from a data version bump in the same session."""
@@ -247,13 +247,13 @@ class RunConfig:
         self.flags_[Flag.MODEL_MAJOR] = True
         return self
 
-    def snapshot_hyperparams(self) -> "RunConfig":
+    def snapshot_hyperparams(self) -> "VersionConfig":
         """Mark hyperparameter set for snapshotting. Triggers a hyperparams minor bump
         (existing params, new values)."""
         self.flags_[Flag.HYPERPARAMS] = True
         return self
 
-    def snapshot_hyperparams_new_grid(self) -> "RunConfig":
+    def snapshot_hyperparams_new_grid(self) -> "VersionConfig":
         """Mark hyperparameter set for snapshotting AND trigger a hyperparams major bump
         (new parameter added to the grid)."""
         self.flags_[Flag.HYPERPARAMS] = True
@@ -267,7 +267,7 @@ class RunConfig:
         cv: int = 5,
         scoring: str = "roc_auc",
         new_grids: dict = None,
-    ) -> "RunConfig":
+    ) -> "VersionConfig":
         """
         Enable hyperparameter tuning and configure the search.
 
@@ -288,7 +288,7 @@ class RunConfig:
         self.new_grids = new_grids or {}
         return self
 
-    def use_data_version(self, version: str) -> "RunConfig":
+    def use_data_version(self, version: str) -> "VersionConfig":
         """Pin raw/final versions to an existing data snapshot. Model and
         hyperparam versions still bump independently based on their own flags.
 
@@ -298,13 +298,13 @@ class RunConfig:
         self.pinned_data_version_ = self.parse_pinned_version_(version)
         return self
 
-    def use_model_version(self, version: str) -> "RunConfig":
+    def use_model_version(self, version: str) -> "VersionConfig":
         """Pin the model version (symmetric with use_data_version). Rarely needed
         outside of overriding an existing model snapshot intentionally."""
         self.pinned_model_version_ = self.parse_pinned_version_(version)
         return self
 
-    def use_hyperparam_version(self, version: str) -> "RunConfig":
+    def use_hyperparam_version(self, version: str) -> "VersionConfig":
         """Pin the hyperparams version (symmetric with use_data_version)."""
         self.pinned_hyperparam_version_ = self.parse_pinned_version_(version)
         return self
@@ -313,7 +313,7 @@ class RunConfig:
     # Build — computes version strings, does NOT write to GCS
     # =========================================================================
 
-    def build(self) -> "RunConfig":
+    def build(self) -> "VersionConfig":
         """
         Compute new version strings for each entity based on active flags.
         Three entities bump independently:
@@ -396,7 +396,7 @@ class RunConfig:
         def arrow_(cur, new):
             return f"v{cur[0]}.{cur[1]} -> v{new[0]}.{new[1]}" if cur != new else f"v{cur[0]}.{cur[1]} (unchanged)"
 
-        print("\nRunConfig ready:")
+        print("\nVersionConfig ready:")
         print(f"  Active flags      : {active if active else ['none (dry run)']}")
         print(f"  data              : {arrow_(d_cur, self.new_data_)}"
               + (f"  [pinned -> v{self.pinned_data_version_[0]}.{self.pinned_data_version_[1]}]"
@@ -516,12 +516,12 @@ class RunConfig:
 
     @staticmethod
     def parse_pinned_version_(version: str) -> tuple:
-        return RunConfig.parse_version_(version)
+        return VersionConfig.parse_version_(version)
 
     def __repr__(self) -> str:
         if self.built_:
             active = [k.value for k, v in self.flags_.items() if v]
-            return (f"RunConfig(data={self.new_data_}, model={self.new_model_}, "
+            return (f"VersionConfig(data={self.new_data_}, model={self.new_model_}, "
                     f"hyperparams={self.new_hyperparams_}, "
                     f"use_synthetic={self.use_synthetic_}, active={active})")
-        return "RunConfig(not built — call .build())"
+        return "VersionConfig(not built — call .build())"

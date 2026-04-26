@@ -24,13 +24,13 @@ the absent-stage error message.
 
 Stage construction
 ------------------
-Stage classes pull everything they need from `RunConfig` at construction
+Stage classes pull everything they need from `VersionConfig` at construction
 time, so each factory method is a flat list of constructor calls. A few
 stages also take per-run arguments (`ModelLoader.versions`, `Validator.logic`)
 which are passed positionally / keyword as appropriate.
 """
 
-from pipeline.run_config import RunConfig
+from pipeline.run_config import VersionConfig
 from pipeline.stages.data_loader import DataLoader
 from pipeline.stages.data_splitter import DataSplitter
 from pipeline.stages.feature_engineer import FeatureEngineer
@@ -109,7 +109,7 @@ class PipelineFactory:
     """Static methods, one per named scenario, returning a `PipelineStages`."""
 
     @staticmethod
-    def full_run(config: RunConfig) -> PipelineStages:
+    def full_run(config: VersionConfig) -> PipelineStages:
         """Load fresh data from BQ, split, engineer, augment, train, validate.
 
         Creates the locked validation holdout on the first ever run; loads it
@@ -117,55 +117,58 @@ class PipelineFactory:
         callers that don't need warm-start / baseline-comparison simply do
         not invoke `stages.model_loader.run(run)`.
         """
+        feature_engineer = FeatureEngineer(config)
         return PipelineStages(
             scenario="full_run",
-            loader=DataLoader(config),
+            loader=DataLoader(config, source=DataLoader.SOURCE_BQ),
             splitter=DataSplitter(config),
-            feature_engineer=FeatureEngineer(config),
-            augmenter=SyntheticAugmenter(config),
+            feature_engineer=feature_engineer,
+            augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
             trainer=ModelTrainer(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
         )
 
     @staticmethod
-    def retrain_existing_data(config: RunConfig) -> PipelineStages:
+    def retrain_existing_data(config: VersionConfig) -> PipelineStages:
         """Load from GCS parquet snapshot (no BQ). Re-split, engineer, augment,
         train, validate. Same stage set as `full_run`; `DataLoader` reads from
-        GCS instead of BigQuery based on the active `RunConfig`.
+        GCS instead of BigQuery based on the source argument set here.
         """
+        feature_engineer = FeatureEngineer(config)
         return PipelineStages(
             scenario="retrain_existing_data",
-            loader=DataLoader(config),
+            loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
             splitter=DataSplitter(config),
-            feature_engineer=FeatureEngineer(config),
-            augmenter=SyntheticAugmenter(config),
+            feature_engineer=feature_engineer,
+            augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
             trainer=ModelTrainer(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
         )
 
     @staticmethod
-    def tune_hyperparams(config: RunConfig) -> PipelineStages:
+    def tune_hyperparams(config: VersionConfig) -> PipelineStages:
         """Retrain with hyperparameter search enabled on existing data snapshot.
 
         Functionally identical to `retrain_existing_data`. Search behavior is
         controlled by `config.tune_models` / `config.search_config`, which the
         `ModelTrainer` reads at run time — no factory-side override needed.
         """
+        feature_engineer = FeatureEngineer(config)
         return PipelineStages(
             scenario="tune_hyperparams",
-            loader=DataLoader(config),
+            loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
             splitter=DataSplitter(config),
-            feature_engineer=FeatureEngineer(config),
-            augmenter=SyntheticAugmenter(config),
+            feature_engineer=feature_engineer,
+            augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
             trainer=ModelTrainer(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
         )
 
     @staticmethod
-    def validate_current(config: RunConfig) -> PipelineStages:
+    def validate_current(config: VersionConfig) -> PipelineStages:
         """Validation only against the current model version.
 
         No `trainer`, no `augmenter` — synthetic data has no place in a
@@ -175,7 +178,7 @@ class PipelineFactory:
         """
         return PipelineStages(
             scenario="validate_current",
-            loader=DataLoader(config),
+            loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
             splitter=DataSplitter(config),
             feature_engineer=FeatureEngineer(config),
             model_loader=ModelLoader(config),
@@ -184,7 +187,7 @@ class PipelineFactory:
 
     @staticmethod
     def retro_validate(
-        config: RunConfig,
+        config: VersionConfig,
         model_versions: list[str],
     ) -> PipelineStages:
         """Replay multiple saved model versions against the locked validation set.
@@ -197,7 +200,7 @@ class PipelineFactory:
         """
         return PipelineStages(
             scenario="retro_validate",
-            loader=DataLoader(config),
+            loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
             splitter=DataSplitter(config),
             feature_engineer=FeatureEngineer(config),
             model_loader=ModelLoader(config, versions=model_versions),

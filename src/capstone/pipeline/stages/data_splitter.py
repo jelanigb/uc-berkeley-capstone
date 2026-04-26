@@ -54,7 +54,7 @@ from sklearn.model_selection import train_test_split
 
 from constants import BUCKET_NAME
 from pipeline.pipeline_run import PipelineRun, Stage
-from pipeline.run_config import RunConfig
+from pipeline.run_config import VersionConfig
 
 
 class HoldoutStore:
@@ -112,7 +112,7 @@ class DataSplitter:
 
     def __init__(
         self,
-        config: RunConfig,
+        config: VersionConfig,
         store: HoldoutStore = None,
         confirm: Callable[[], bool] = None,
         seed: int = 42,
