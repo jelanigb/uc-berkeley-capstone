@@ -41,14 +41,14 @@ REQUIRED_FIELDS_ = {
     Stage.EDA_POST: ["df_model"],
     Stage.AUGMENT: ["X_train", "y_train"],
     Stage.TRAIN: ["X_train", "y_train", "X_test", "y_test"],
-    Stage.VALIDATE: ["X_val", "y_val"],
+    Stage.VALIDATE: ["X_val", "X_val_unscaled", "y_val"],
 }
 
 SUMMARY_FIELDS_ = [
     "df_videos", "df_baselines", "df_medians",
     "df_train", "df_test", "df_val",
     "df_model",
-    "X_train", "X_test", "X_val",
+    "X_train", "X_test", "X_val", "X_val_unscaled",
     "y_train", "y_test", "y_val",
     "models", "results",
 ]
@@ -73,6 +73,10 @@ class PipelineRun:
     X_train: Optional[pd.DataFrame] = None
     X_test: Optional[pd.DataFrame] = None
     X_val: Optional[pd.DataFrame] = None
+    # Unscaled val features — post-engineering, pre-StandardScaler.
+    # Validator uses this so each model can apply its own saved scaler, which
+    # differs from the current FeatureEngineer scaler when loading historical models.
+    X_val_unscaled: Optional[pd.DataFrame] = None
     y_train: Optional[pd.Series] = None
     y_test: Optional[pd.Series] = None
     y_val: Optional[pd.Series] = None

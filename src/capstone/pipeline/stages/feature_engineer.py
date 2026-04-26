@@ -181,6 +181,9 @@ class FeatureEngineer:
         self.scaler_ = StandardScaler()
         X_train = self._scale(X_train, fit=True)
         X_test = self._scale(X_test, fit=False)
+        # Capture pre-scaling val features so Validator can apply each loaded
+        # model's own historical scaler rather than the current one.
+        run.X_val_unscaled = X_val.copy()
         X_val = self._scale(X_val, fit=False)
 
         run.X_train, run.y_train = X_train, y_train
