@@ -69,6 +69,7 @@ class ModelTrainerLogic:
         X_test: pd.DataFrame,
         y_test: pd.Series,
         config: VersionConfig,
+        num_synth_rows: int = 0,
     ) -> dict:
         """Train all four models and return {model_name: partial_entry_dict}.
 
@@ -116,7 +117,16 @@ class ModelTrainerLogic:
         )
         ensemble.fit(X_train, y_train)
 
-        training_data = TrainingData.from_splits(X_train, y_train, X_test, y_test)
+        total_train = len(X_train)
+        training_data = TrainingData(
+            real_train_rows=total_train - num_synth_rows,
+            synthetic_train_rows=num_synth_rows,
+            total_train_rows=total_train,
+            test_rows=len(X_test),
+            synthetic_pct=round(num_synth_rows / total_train * 100, 1) if total_train > 0 else 0,
+            target_balance_train=y_train.value_counts().to_dict(),
+            target_balance_test=y_test.value_counts().to_dict(),
+        )
 
         entries = {
             "lr_l1": self._entry(lr, X_test, y_test, feature_cols, training_data),
@@ -235,6 +245,7 @@ class ModelTrainer:
             run.X_train, run.y_train,
             run.X_test, run.y_test,
             self.config,
+            num_synth_rows=run.num_synth_rows,
         )
 
         # Stamp scaler + feature_cols from FeatureEngineer onto every entry.

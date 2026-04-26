@@ -92,6 +92,7 @@ class SyntheticAugmenter:
 
         run.X_train = pd.concat([run.X_train, X_synth])
         run.y_train = pd.concat([run.y_train, y_synth])
+        run.num_synth_rows = len(X_synth)
 
         print(
             f"[SyntheticAugmenter] Appended {len(X_synth)} synth rows to X_train. "

@@ -77,6 +77,9 @@ class PipelineRun:
     y_test: Optional[pd.Series] = None
     y_val: Optional[pd.Series] = None
 
+    # Synthetic row count (set by SyntheticAugmenter; read by ModelTrainer)
+    num_synth_rows: int = 0
+
     # Model artifacts (populated by ModelTrainer)
     models: dict = field(default_factory=dict)
 
