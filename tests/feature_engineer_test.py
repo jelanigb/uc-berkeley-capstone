@@ -86,18 +86,24 @@ def test_drop_bad_baselines_drops_nan(logic, col):
     assert list(out["video_id"]) == ["ok"]
 
 
-@pytest.mark.parametrize("col", [
-    "baseline_median_views",
-    "baseline_median_likes",
-    "baseline_median_comments",
-])
-def test_drop_bad_baselines_drops_zero(logic, col):
+def test_drop_bad_baselines_drops_zero_engagement_rate(logic):
     df = _df(
         _real_row(video_id="ok"),
-        _real_row(video_id="bad", **{col: 0}),
+        _real_row(video_id="bad", baseline_median_engagement_rate=0.0),
     )
     out = logic._drop_bad_baselines(df, label="train")
     assert list(out["video_id"]) == ["ok"]
+
+
+def test_drop_bad_baselines_keeps_zero_comments(logic):
+    """Zero comments is valid — channels with no commenting still have a
+    non-zero engagement_rate if they have likes. Not a degenerate label."""
+    df = _df(
+        _real_row(video_id="ok"),
+        _real_row(video_id="also_ok", baseline_median_comments=0),
+    )
+    out = logic._drop_bad_baselines(df, label="train")
+    assert list(out["video_id"]) == ["ok", "also_ok"]
 
 
 def test_drop_bad_baselines_returns_independent_copy(logic):
@@ -252,22 +258,17 @@ def test_engineer_returns_engineered_df_with_expected_cols(logic):
 
 
 def test_engineer_drops_bad_baselines(logic):
-    df_train = _df(
-        _real_row(video_id="ok_train"),
-        _real_row(video_id="bad_train", baseline_median_views=0),
+    df_nan = _df(
+        _real_row(video_id="ok"),
+        _real_row(video_id="bad_nan_likes", baseline_median_likes=np.nan),
     )
-    df_test = _df(
-        _real_row(video_id="ok_test"),
-        _real_row(video_id="bad_test", baseline_median_likes=np.nan),
-    )
-    df_val = _df(
-        _real_row(video_id="ok_val"),
-        _real_row(video_id="bad_val", baseline_median_comments=0),
+    df_zero_rate = _df(
+        _real_row(video_id="ok"),
+        _real_row(video_id="bad_zero_rate", baseline_median_engagement_rate=0.0),
     )
 
-    assert list(logic.engineer(df_train, label="train")["video_id"]) == ["ok_train"]
-    assert list(logic.engineer(df_test, label="test")["video_id"]) == ["ok_test"]
-    assert list(logic.engineer(df_val, label="val")["video_id"]) == ["ok_val"]
+    assert list(logic.engineer(df_nan, label="nan")["video_id"]) == ["ok"]
+    assert list(logic.engineer(df_zero_rate, label="zero_rate")["video_id"]) == ["ok"]
 
 
 def test_engineer_feature_cols_excludes_target_and_seven_d(logic):

@@ -84,6 +84,17 @@ def create_holdout(
 
     confirm: callable returning bool. If None, proceeds without prompting.
     """
+    if len(df_engineered) == 0:
+        raise ValueError(
+            "df_engineered is empty — 0 rows available for holdout creation.\n"
+            "Likely causes:\n"
+            "  1. No videos with all 3 poll labels: check 'Videos with all 3 polls:'"
+            " in the pivot_snapshots output above.\n"
+            "  2. All rows failed baseline filtering: look for '_drop_bad_baselines"
+            " dropped N rows' in the FeatureEngineer output above, meaning the"
+            " channel baseline join (Step 2) matched no channels."
+        )
+
     key = stratify_key(df_engineered)
     cell_counts = key.value_counts()
     small_cells = cell_counts[cell_counts < 2]

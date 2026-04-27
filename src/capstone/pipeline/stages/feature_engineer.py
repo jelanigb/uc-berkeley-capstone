@@ -15,8 +15,10 @@ scaling — those are DataSplitter and Scaler's responsibility.
 
 Bad-baseline rows
 -----------------
-A row with NaN or 0 in baseline_median_views/likes/comments has a
-corrupted target (above_baseline degenerates to engagement_7d > 0). We
+A row with NaN in baseline_median_views/likes/comments is bad data; targets are
+dependnet on baseline engagement data and cannot be calculated for these rows.
+Likewise if a channel has a median_engagement_rate of exactly 0, then it should 
+be excluded (as ANY engagement will put the channel above median). We
 drop those rows before engineer_features runs. This is a defensive check;
 DataPreprocessor's left-join already surfaces channels with no baseline
 match as NaN in those columns.
@@ -49,7 +51,7 @@ TIER_ENCODING_ = {tier: i for i, tier in enumerate(TIER_ORDER_)}
 # Education / Lifestyle / Tech (would distort LR coefficients).
 VERTICAL_ORDER_ = ["Education", "Lifestyle", "Tech"]
 
-# Baseline columns where Nan corrupts the target.
+# Columns where NaN corrupts the target computation.
 BASELINE_NON_NAN_COLS_ = [
     "baseline_median_views",
     "baseline_median_likes",
@@ -117,12 +119,12 @@ class FeatureEngineerLogic:
 
     def _drop_bad_baselines(self, df: pd.DataFrame, label: str) -> pd.DataFrame:
         is_nan = df[BASELINE_NON_NAN_COLS_].isna().any(axis=1)
-        is_zero = (df['baseline_median_engagement_rate'] == 0.0).any()
+        is_zero = df['baseline_median_engagement_rate'] == 0.0
         bad = is_nan | is_zero
         if bad.any():
             print(
-                f"  {label}: dropped {int(bad.sum())} rows with NaN in a baseline_median or 0.0 in "
-                f"baseline_median_engagement"
+                f"  {label}: dropped {int(bad.sum())} rows with NaN in a "
+                f"baseline_median_* column or 0.0 baseline_median_engagement_rate"
             )
         return df.loc[~bad].copy()
 
@@ -142,10 +144,14 @@ class FeatureEngineerLogic:
         """Fill NaN/inf in `subset` columns with `fill_value`.
 
         `subset=None` means every column. Inf is mapped to NaN first so a
-        future median fill works correctly.
+        future median fill works correctly. Nullable boolean columns (BooleanDtype)
+        are cast to Int8 first so fillna(0) is accepted.
         """
         df = df.copy()
         cols = df.columns.tolist() if not subset else subset
+        bool_cols = [c for c in cols if isinstance(df[c].dtype, pd.BooleanDtype)]
+        if bool_cols:
+            df[bool_cols] = df[bool_cols].astype(pd.Int8Dtype())
         df[cols] = df[cols].replace([np.inf, -np.inf], np.nan).fillna(fill_value)
         return df
 

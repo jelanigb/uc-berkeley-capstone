@@ -75,6 +75,7 @@ def print_plan(
     run: PipelineRun,
     dry_store: InMemoryHoldoutStore,
     config: VersionConfig,
+    live: bool = False,
 ) -> None:
     """Print the full dry-run plan: BQ counts, GCS paths, split sizes, sample IDs."""
 
@@ -131,7 +132,7 @@ def print_plan(
         for vid in sample_ids:
             print(f"    {vid}")
 
-    _section(f"{'' if live else 'simluated'} Version bump")
+    _section(f"{'' if live else 'simulated'} Version bump")
     cur_data = config.state_["data"]
     print(f"  raw_version:  v{cur_data['major']}.{cur_data['minor']}_{cur_data['raw_suffix']}  →  {config.raw_version}")
     print(f"  (config.commit() will be called if --yes flag is used)")
@@ -186,14 +187,17 @@ def main() -> None:
     # ── step 1: pull from BQ ────────────────────────────────────────────────
     print("\nStep 1 — Loading data from BigQuery...")
     DataLoader(config, source=DataLoader.SOURCE_BQ).run(run)
+    print(f"  → {len(run.df_videos):,} video poll rows, {len(run.df_medians):,} baseline median rows")
 
     # ── step 2: preprocess (pivot + baseline-join) ───────────────────────────
     print("\nStep 2 — Preprocessing (pivot + baseline join)...")
     DataPreprocessor(config).run(run)
+    print(f"  → {len(run.df_clean):,} rows in df_clean (one per complete-triplet video)")
 
     # ── step 3: feature engineering ──────────────────────────────────────────
     print("\nStep 3 — Engineering features...")
     FeatureEngineer(config).run(run)
+    print(f"  → {len(run.df_engineered):,} rows in df_engineered")
 
     # ── step 4: dry-run holdout split ────────────────────────────────────────
     print("\nStep 4 — Computing validation split (dry run)...")
@@ -207,7 +211,7 @@ def main() -> None:
     )
 
     # ── always print the plan ───────────────────────────────────────────────
-    print_plan(run, dry_store, config)
+    print_plan(run, dry_store, config, live)
 
     if not live:
         sys.exit(0)
