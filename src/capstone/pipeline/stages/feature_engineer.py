@@ -49,11 +49,12 @@ TIER_ENCODING_ = {tier: i for i, tier in enumerate(TIER_ORDER_)}
 # Education / Lifestyle / Tech (would distort LR coefficients).
 VERTICAL_ORDER_ = ["Education", "Lifestyle", "Tech"]
 
-# Baseline columns whose absence corrupts the target.
-BASELINE_REQUIRED_COLS_ = [
+# Baseline columns where Nan corrupts the target.
+BASELINE_NON_NAN_COLS_ = [
     "baseline_median_views",
     "baseline_median_likes",
     "baseline_median_comments",
+    "baseline_median_engagement_rate",
 ]
 
 # Columns excluded from X. Kept on df for post-engineering EDA so
@@ -115,13 +116,13 @@ class FeatureEngineerLogic:
         return df
 
     def _drop_bad_baselines(self, df: pd.DataFrame, label: str) -> pd.DataFrame:
-        is_nan = df[BASELINE_REQUIRED_COLS_].isna().any(axis=1)
-        is_zero = (df[BASELINE_REQUIRED_COLS_] == 0).any(axis=1)
+        is_nan = df[BASELINE_NON_NAN_COLS_].isna().any(axis=1)
+        is_zero = (df['baseline_median_engagement_rate'] == 0.0).any()
         bad = is_nan | is_zero
         if bad.any():
             print(
-                f"  {label}: dropped {int(bad.sum())} rows with NaN or 0 in "
-                f"baseline_median_*"
+                f"  {label}: dropped {int(bad.sum())} rows with NaN in a baseline_median or 0.0 in "
+                f"baseline_median_engagement"
             )
         return df.loc[~bad].copy()
 

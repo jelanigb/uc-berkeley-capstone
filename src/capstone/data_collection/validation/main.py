@@ -47,6 +47,7 @@ def run_check(bq_client):
         "status": "ok",
         "stages": {},
         "warnings": [],
+        "missing_baselines": [],
     }
 
     for stage in POLL_STAGES:
@@ -175,6 +176,23 @@ def run_check(bq_client):
 
         results["stages"][name] = stage_result
 
+    # --- Check 5: Missing Channel Baselines ---
+    # Finds channels present in tracking table but missing from baseline table
+    baseline_check_query = f"""
+        SELECT DISTINCT vt.channel_id
+        FROM `{PROJECT_ID}.{DATASET_ID}.videos_to_track` vt
+        LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.channel_baseline_medians` cbm
+            ON vt.channel_id = cbm.channel_id
+        WHERE cbm.channel_id IS NULL
+    """
+    baseline_rows = list(bq_client.query(baseline_check_query).result())
+    if baseline_rows:
+        results["missing_baselines"] = [r.channel_id for r in baseline_rows]
+        results["warnings"].append(
+            f"Baselines: {len(baseline_rows)} channels are being tracked but "
+            f"missing from channel_baseline_medians"
+        )
+
     # --- Overall tracking table health ---
     health_query = f"""
         SELECT
@@ -250,6 +268,13 @@ def format_report(results):
         lines.append(f"  {label}: {vol['count']} snapshots "
                      f"({vol['earliest']} → {vol['latest']})")
 
+    # Missing Baselines
+    if results.get("missing_baselines"):
+        lines.append("\n--- Missing Channel Baselines ---")
+        lines.append(f"  Count: {len(results['missing_baselines'])}")
+        lines.append(f"  IDs: {', '.join(results['missing_baselines'][:10])}" + 
+                     ("..." if len(results['missing_baselines']) > 10 else ""))
+
     # Per-stage details
     for stage_name, stage in results["stages"].items():
         lines.append(f"\n--- Stage: {stage_name} ---")
@@ -314,4 +339,3 @@ if __name__ == "__main__":
     bq_client = bigquery.Client(project=PROJECT_ID)
     results = run_check(bq_client)
     print(format_report(results))
-
