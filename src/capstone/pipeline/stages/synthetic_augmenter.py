@@ -1,32 +1,30 @@
 """
 SyntheticAugmenter — append synthetic rows to the train split only.
 
-Generates synthetic rows from the real, engineered train frame (`run.df_model`)
-via `data_processing.synthetic_data.generate_synthetic_data`, then aligns the
-result with `run.X_train` by routing it through the injected `FeatureEngineer`'s
-`transform_external` method. The aligned synth rows are concatenated onto
-`run.X_train` / `run.y_train` only — `X_test` and `X_val` are never touched.
+Generates synthetic rows from run.df_train (the real, post-engineering,
+unscaled train set) via generate_synthetic_data, engineers them through the
+same FeatureEngineerLogic chain, aligns them with X_train's column space,
+scales them using the injected Scaler's fitted StandardScaler, then
+concatenates onto run.X_train / run.y_train. X_test and X_val are never
+touched.
 
-Coupling to FeatureEngineer
----------------------------
-Synth rows must end up shaped *exactly* like real X_train: same engineered
-columns, same categorical encoding, scaled by the same fitted StandardScaler.
-Re-implementing any part of that here would risk silent drift, so the augmenter
-is constructor-injected with the live `FeatureEngineer` instance and reuses its
-public `transform_external(df)` method. The factory wires this dependency.
+Coupling
+--------
+Synth rows must match X_train exactly: same engineered columns, same
+categorical encoding, scaled by the same fitted StandardScaler. This stage
+is constructor-injected with:
+  - scaler: the live Scaler instance (for scaler_.transform and feature_cols_)
+  - logic:  a FeatureEngineerLogic instance (for the engineering chain)
+
+The factory wires these dependencies.
 
 Gating
 ------
-The stage is a no-op when `config.use_synthetic` is False — the notebook
-always calls it; the gate lives inside the stage so the notebook stays
-scenario-agnostic.
+No-op when config.use_synthetic is False.
 
 Row-count formula
 -----------------
-Synth row count is derived from `target_real_pct` so the resulting train
-mixture has that proportion of real data. `target_real_pct=0.8` → real:synth
-= 4:1 (e.g. 10k real → 2.5k synth → 12.5k total, 80% real). Formula matches
-the legacy `get_synth_rows_proportion` helper from the original notebook.
+synth = floor(real / target_real_pct) - real
 """
 
 import math
@@ -36,7 +34,7 @@ import pandas as pd
 from data_processing.synthetic_data import generate_synthetic_data
 from pipeline.pipeline_run import PipelineRun, Stage
 from pipeline.version_config import VersionConfig
-from pipeline.stages.feature_engineer import FeatureEngineer
+from pipeline.stages.feature_engineer import FeatureEngineerLogic, TARGET_COL_
 
 
 class SyntheticAugmenter:
@@ -45,11 +43,13 @@ class SyntheticAugmenter:
     def __init__(
         self,
         config: VersionConfig,
-        feature_engineer: FeatureEngineer,
+        scaler,
+        logic: FeatureEngineerLogic = None,
         seed: int = 42,
     ):
         self.config = config
-        self.feature_engineer = feature_engineer
+        self.scaler = scaler
+        self.logic = logic or FeatureEngineerLogic()
         self.seed = seed
 
     def run(self, run: PipelineRun) -> PipelineRun:
@@ -58,13 +58,8 @@ class SyntheticAugmenter:
             return run
 
         run.assert_ready_for(Stage.AUGMENT)
-        if run.df_model is None:
-            raise RuntimeError(
-                "SyntheticAugmenter requires run.df_model. "
-                "Did FeatureEngineer.run() complete?"
-            )
 
-        num_synth = self._compute_synth_row_count(len(run.df_model))
+        num_synth = self._compute_synth_row_count(len(run.df_train))
         if num_synth <= 0:
             print(
                 f"[SyntheticAugmenter] Computed num_synth={num_synth} "
@@ -73,14 +68,19 @@ class SyntheticAugmenter:
             return run
 
         df_synth = generate_synthetic_data(
-            run.df_model,
+            run.df_train,
             num_rows=num_synth,
             seed=self.seed,
         )
 
-        X_synth, y_synth = self.feature_engineer.transform_external(
-            df_synth, label="synth"
-        )
+        # Engineer synth rows through the same chain that ran on real data.
+        df_synth_eng = self.logic.engineer(df_synth, label="synth")
+
+        # Align to feature columns and scale using the already-fitted scaler.
+        feature_cols = self.scaler.feature_cols_
+        X_synth = df_synth_eng[feature_cols].copy()
+        X_synth = self.scaler.transform(X_synth)
+        y_synth = df_synth_eng[TARGET_COL_].copy()
 
         run.X_train = pd.concat([run.X_train, X_synth])
         run.y_train = pd.concat([run.y_train, y_synth])
@@ -94,8 +94,5 @@ class SyntheticAugmenter:
         return run
 
     def _compute_synth_row_count(self, num_real_rows: int) -> int:
-        """Mirrors `get_synth_rows_proportion` from the legacy notebook:
-
-            synth = floor(real / target_real_pct) - real
-        """
+        """synth = floor(real / target_real_pct) - real"""
         return math.floor(num_real_rows / self.config.target_real_pct) - num_real_rows

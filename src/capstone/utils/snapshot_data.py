@@ -208,7 +208,7 @@ def snapshot_video_data(version_tag: str, notes: str = ""):
     query = f"""
         SELECT *
         FROM `{PROJECT_ID}.{DATASET_ID}.video_snapshots`
-        WHERE poll_label = '7d'
+        WHERE poll_label IS NOT NULL
     """
     df = bq_client.query(query).to_dataframe()
 

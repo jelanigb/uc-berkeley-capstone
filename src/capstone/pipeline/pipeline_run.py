@@ -23,9 +23,11 @@ class Stage(Enum):
     returned by `PipelineFactory.<scenario>(config)` in the notebook.
     """
     LOAD = "load"
-    SPLIT = "split"
-    EDA_PRE = "eda_pre"
+    PREPROCESS = "preprocess"
     ENGINEER = "engineer"
+    SPLIT = "split"
+    SCALE = "scale"
+    EDA_PRE = "eda_pre"
     EDA_POST = "eda_post"
     AUGMENT = "augment"
     TRAIN = "train"
@@ -35,19 +37,21 @@ class Stage(Enum):
 # Fields each stage expects to already be populated before it runs.
 REQUIRED_FIELDS_ = {
     Stage.LOAD: [],
-    Stage.SPLIT: ["df_videos"],
+    Stage.PREPROCESS: ["df_videos", "df_medians"],
+    Stage.ENGINEER: ["df_clean"],
+    Stage.SPLIT: ["df_engineered"],
+    Stage.SCALE: ["X_train", "X_test", "X_val"],
     Stage.EDA_PRE: ["df_train"],
-    Stage.ENGINEER: ["df_train", "df_test", "df_val"],
-    Stage.EDA_POST: ["df_model"],
-    Stage.AUGMENT: ["X_train", "y_train"],
+    Stage.EDA_POST: ["df_train"],
+    Stage.AUGMENT: ["X_train", "y_train", "df_train"],
     Stage.TRAIN: ["X_train", "y_train", "X_test", "y_test"],
     Stage.VALIDATE: ["X_val", "X_val_unscaled", "y_val"],
 }
 
 SUMMARY_FIELDS_ = [
     "df_videos", "df_baselines", "df_medians",
+    "df_clean", "df_engineered",
     "df_train", "df_test", "df_val",
-    "df_model",
     "X_train", "X_test", "X_val", "X_val_unscaled",
     "y_train", "y_test", "y_val",
     "models", "results",
@@ -63,19 +67,26 @@ class PipelineRun:
     df_baselines: Optional[pd.DataFrame] = None
     df_medians: Optional[pd.DataFrame] = None
 
-    # Splits (populated by DataSplitter — real data only)
+    # Preprocessed data (populated by DataPreprocessor)
+    # Wide format: 1 row per complete-triplet video, baseline columns joined.
+    df_clean: Optional[pd.DataFrame] = None
+
+    # Engineered data (populated by FeatureEngineer)
+    # All derived features present; target column above_baseline computed.
+    df_engineered: Optional[pd.DataFrame] = None
+
+    # Splits (populated by DataSplitter — real data only, post-engineering)
     df_train: Optional[pd.DataFrame] = None   # augmented with synthetic downstream
     df_test: Optional[pd.DataFrame] = None    # real data only, always
     df_val: Optional[pd.DataFrame] = None     # real data only, locked forever
 
-    # Engineered features (populated by FeatureEngineer)
-    df_model: Optional[pd.DataFrame] = None   # engineered train set, real only (EDA)
+    # Feature matrices (X unscaled, produced by DataSplitter; scaled in-place by Scaler)
     X_train: Optional[pd.DataFrame] = None
     X_test: Optional[pd.DataFrame] = None
     X_val: Optional[pd.DataFrame] = None
     # Unscaled val features — post-engineering, pre-StandardScaler.
-    # Validator uses this so each model can apply its own saved scaler, which
-    # differs from the current FeatureEngineer scaler when loading historical models.
+    # Validator uses this so each loaded model can apply its own saved scaler,
+    # which differs from the current Scaler's fit when loading historical models.
     X_val_unscaled: Optional[pd.DataFrame] = None
     y_train: Optional[pd.Series] = None
     y_test: Optional[pd.Series] = None

@@ -7,7 +7,7 @@ Architecture
 ModelTrainerLogic holds the core training and evaluation logic and is fully
 testable with just DataFrames and a VersionConfig. ModelTrainer (outer) handles
 orchestration and stamps each entry with the scaler and feature_cols from the
-injected FeatureEngineer.
+injected Scaler stage.
 
 Hyperparameter resolution order
 --------------------------------
@@ -17,12 +17,10 @@ Hyperparameter resolution order
 
 Scaling
 -------
-FeatureEngineer scales all splits with one shared StandardScaler. All four
-models are therefore trained on the same scaled X_train. The scaler is stamped
-onto each run.models entry so that at inference time any model can be paired
-with the correct transform. (In the legacy notebook only LR used a scaler;
-the design doc explicitly unified this — RF and XGB are scale-invariant, so
-the shared scaler does not hurt them.)
+The Scaler stage fits a StandardScaler on X_train and transforms all splits.
+ModelTrainer is constructor-injected with the live Scaler instance so its
+fitted scaler_ and feature_cols_ can be stamped onto each run.models entry
+for correct inference at load time.
 
 run.models entry shape
 ----------------------
@@ -50,7 +48,7 @@ from pipeline.version_config import (
     DEFAULT_RF_PARAMS_,
     DEFAULT_XGB_PARAMS_,
 )
-from pipeline.stages.feature_engineer import FeatureEngineer
+from pipeline.stages.scaler import Scaler
 from utils.snapshot_hyperparameters import load_hyperparams
 from utils.snapshot_model import ModelConfig, ModelResult, TrainingData
 from utils.tune_hyperparameters import get_default_param_grid, tune_model
@@ -222,20 +220,19 @@ class ModelTrainerLogic:
 class ModelTrainer:
     """Stage — train all models and populate run.models.
 
-    Constructor-injected with the live FeatureEngineer instance so the shared
-    StandardScaler and feature_cols can be stamped onto each run.models entry.
-    The factory is responsible for wiring this dependency (same pattern as
-    SyntheticAugmenter).
+    Constructor-injected with the live Scaler instance so its fitted
+    scaler_ and feature_cols_ can be stamped onto each run.models entry.
+    The factory is responsible for wiring this dependency.
     """
 
     def __init__(
         self,
         config: VersionConfig,
-        feature_engineer: FeatureEngineer,
+        scaler: Scaler,
         logic: ModelTrainerLogic = None,
     ):
         self.config = config
-        self.feature_engineer = feature_engineer
+        self.scaler = scaler
         self.logic = logic or ModelTrainerLogic()
 
     def run(self, run: PipelineRun) -> PipelineRun:
@@ -248,11 +245,11 @@ class ModelTrainer:
             num_synth_rows=run.num_synth_rows,
         )
 
-        # Stamp scaler + feature_cols from FeatureEngineer onto every entry.
-        # Needed by ModelSnapshotter so inference can reproduce the same scaling.
+        # Stamp scaler + feature_cols from Scaler onto every entry so
+        # ModelSnapshotter can save and inference can reproduce the transform.
         for entry in entries.values():
-            entry["scaler"] = self.feature_engineer.scaler_
-            entry["feature_cols"] = self.feature_engineer.feature_cols_
+            entry["scaler"] = self.scaler.scaler_
+            entry["feature_cols"] = self.scaler.feature_cols_
 
         run.models = entries
         return run

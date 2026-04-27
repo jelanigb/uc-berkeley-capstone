@@ -26,14 +26,23 @@ Stage construction
 ------------------
 Stage classes pull everything they need from `VersionConfig` at construction
 time, so each factory method is a flat list of constructor calls. A few
-stages also take per-run arguments (`ModelLoader.versions`, `Validator.logic`)
-which are passed positionally / keyword as appropriate.
+stages also take per-run arguments passed positionally / keyword as
+appropriate.
+
+Stage order (all scenarios)
+---------------------------
+loader → preprocessor → engineer → splitter → scaler
+  → [augmenter → trainer]         (training scenarios only)
+  → [model_loader]                (optional in training; required in validation)
+  → validator → validation_results_snapshotter
 """
 
 from pipeline.version_config import VersionConfig
 from pipeline.stages.data_loader import DataLoader
+from pipeline.stages.data_preprocessor import DataPreprocessor
 from pipeline.stages.data_splitter import DataSplitter
-from pipeline.stages.feature_engineer import FeatureEngineer
+from pipeline.stages.feature_engineer import FeatureEngineer, FeatureEngineerLogic
+from pipeline.stages.scaler import Scaler
 from pipeline.stages.synthetic_augmenter import SyntheticAugmenter
 from pipeline.stages.raw_snapshotter import RawSnapshotter
 from pipeline.stages.final_snapshotter import FinalSnapshotter
@@ -49,9 +58,11 @@ from pipeline.stages.validation_results_snapshotter import ValidationResultsSnap
 # set passed to __init__ is a typo and is rejected up front.
 VALID_STAGE_NAMES_ = (
     "loader",
+    "preprocessor",
     "raw_snapshotter",
+    "engineer",
     "splitter",
-    "feature_engineer",
+    "scaler",
     "augmenter",
     "final_snapshotter",
     "trainer",
@@ -102,13 +113,14 @@ class PipelineStages:
 
     @staticmethod
     def _stage_class_name_(attr_name: str) -> str:
-        """Map an attribute name (`trainer`) to its class name (`ModelTrainer`)
-        for the absent-stage error message."""
+        """Map an attribute name to its class name for the absent-stage error."""
         return {
             "loader": "DataLoader",
+            "preprocessor": "DataPreprocessor",
             "raw_snapshotter": "RawSnapshotter",
+            "engineer": "FeatureEngineer",
             "splitter": "DataSplitter",
-            "feature_engineer": "FeatureEngineer",
+            "scaler": "Scaler",
             "augmenter": "SyntheticAugmenter",
             "final_snapshotter": "FinalSnapshotter",
             "trainer": "ModelTrainer",
@@ -125,23 +137,26 @@ class PipelineFactory:
 
     @staticmethod
     def full_run(config: VersionConfig) -> PipelineStages:
-        """Load fresh data from BQ, split, engineer, augment, train, validate.
+        """Load fresh data from BQ, preprocess, engineer, split, scale,
+        augment, train, validate.
 
-        Creates the locked validation holdout on the first ever run; loads it
-        on every subsequent run. `ModelLoader` is wired in but optional —
-        callers that don't need warm-start / baseline-comparison simply do
-        not invoke `stages.model_loader.run(run)`.
+        ModelLoader is wired but optional — callers that don't need
+        warm-start / baseline-comparison simply do not invoke
+        stages.model_loader.run(run).
         """
-        feature_engineer = FeatureEngineer(config)
+        logic = FeatureEngineerLogic()
+        scaler = Scaler(config)
         return PipelineStages(
             scenario="full_run",
             loader=DataLoader(config, source=DataLoader.SOURCE_BQ),
+            preprocessor=DataPreprocessor(config),
             raw_snapshotter=RawSnapshotter(config),
+            engineer=FeatureEngineer(config, logic=logic),
             splitter=DataSplitter(config),
-            feature_engineer=feature_engineer,
-            augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
+            scaler=scaler,
+            augmenter=SyntheticAugmenter(config, scaler=scaler, logic=logic),
             final_snapshotter=FinalSnapshotter(config),
-            trainer=ModelTrainer(config, feature_engineer=feature_engineer),
+            trainer=ModelTrainer(config, scaler=scaler),
             hyperparam_snapshotter=HyperparamSnapshotter(config),
             model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
@@ -151,20 +166,23 @@ class PipelineFactory:
 
     @staticmethod
     def retrain_existing_data(config: VersionConfig) -> PipelineStages:
-        """Load from GCS parquet snapshot (no BQ). Re-split, engineer, augment,
-        train, validate. Same stage set as `full_run`; `DataLoader` reads from
-        GCS instead of BigQuery based on the source argument set here.
+        """Load from GCS parquet snapshot (no BQ). Preprocess, engineer,
+        split, scale, augment, train, validate. Same stage set as full_run;
+        DataLoader reads from GCS instead of BigQuery.
         """
-        feature_engineer = FeatureEngineer(config)
+        logic = FeatureEngineerLogic()
+        scaler = Scaler(config)
         return PipelineStages(
             scenario="retrain_existing_data",
             loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
+            preprocessor=DataPreprocessor(config),
             raw_snapshotter=RawSnapshotter(config),
+            engineer=FeatureEngineer(config, logic=logic),
             splitter=DataSplitter(config),
-            feature_engineer=feature_engineer,
-            augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
+            scaler=scaler,
+            augmenter=SyntheticAugmenter(config, scaler=scaler, logic=logic),
             final_snapshotter=FinalSnapshotter(config),
-            trainer=ModelTrainer(config, feature_engineer=feature_engineer),
+            trainer=ModelTrainer(config, scaler=scaler),
             hyperparam_snapshotter=HyperparamSnapshotter(config),
             model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
@@ -176,20 +194,23 @@ class PipelineFactory:
     def tune_hyperparams(config: VersionConfig) -> PipelineStages:
         """Retrain with hyperparameter search enabled on existing data snapshot.
 
-        Functionally identical to `retrain_existing_data`. Search behavior is
-        controlled by `config.tune_models` / `config.search_config`, which the
-        `ModelTrainer` reads at run time — no factory-side override needed.
+        Functionally identical to retrain_existing_data. Search behavior is
+        controlled by config.tune_models / config.search_config, which
+        ModelTrainer reads at run time — no factory-side override needed.
         """
-        feature_engineer = FeatureEngineer(config)
+        logic = FeatureEngineerLogic()
+        scaler = Scaler(config)
         return PipelineStages(
             scenario="tune_hyperparams",
             loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
+            preprocessor=DataPreprocessor(config),
             raw_snapshotter=RawSnapshotter(config),
+            engineer=FeatureEngineer(config, logic=logic),
             splitter=DataSplitter(config),
-            feature_engineer=feature_engineer,
-            augmenter=SyntheticAugmenter(config, feature_engineer=feature_engineer),
+            scaler=scaler,
+            augmenter=SyntheticAugmenter(config, scaler=scaler, logic=logic),
             final_snapshotter=FinalSnapshotter(config),
-            trainer=ModelTrainer(config, feature_engineer=feature_engineer),
+            trainer=ModelTrainer(config, scaler=scaler),
             hyperparam_snapshotter=HyperparamSnapshotter(config),
             model_snapshotter=ModelSnapshotter(config),
             model_loader=ModelLoader(config),
@@ -201,16 +222,17 @@ class PipelineFactory:
     def validate_current(config: VersionConfig) -> PipelineStages:
         """Validation only against the current model version.
 
-        No `trainer`, no `augmenter` — synthetic data has no place in a
-        validation-only flow. `ModelLoader` defaults to loading
-        `config.model_version`; `Validator` consumes `run.models` populated
-        by it. Accessing `stages.trainer` or `stages.augmenter` raises.
+        No trainer, no augmenter — synthetic data has no place in a
+        validation-only flow. ModelLoader loads config.model_version;
+        Validator consumes run.models populated by it.
         """
         return PipelineStages(
             scenario="validate_current",
             loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
+            preprocessor=DataPreprocessor(config),
+            engineer=FeatureEngineer(config),
             splitter=DataSplitter(config),
-            feature_engineer=FeatureEngineer(config),
+            scaler=Scaler(config),
             model_loader=ModelLoader(config),
             validator=Validator(config),
             validation_results_snapshotter=ValidationResultsSnapshotter(config),
@@ -223,17 +245,19 @@ class PipelineFactory:
     ) -> PipelineStages:
         """Replay multiple saved model versions against the locked validation set.
 
-        `ModelLoader` is configured with the explicit list of versions and
-        populates `run.models` with all of them. `Validator` is wired with
-        `RetroValidatorLogic`, which iterates over the loaded versions and
+        ModelLoader is configured with the explicit list of versions and
+        populates run.models with all of them. Validator is wired with
+        RetroValidatorLogic, which iterates over the loaded versions and
         produces a per-version metrics breakdown for cross-version comparison.
-        Like `validate_current`, no trainer / augmenter.
+        Like validate_current, no trainer / augmenter.
         """
         return PipelineStages(
             scenario="retro_validate",
             loader=DataLoader(config, source=DataLoader.SOURCE_GCS),
+            preprocessor=DataPreprocessor(config),
+            engineer=FeatureEngineer(config),
             splitter=DataSplitter(config),
-            feature_engineer=FeatureEngineer(config),
+            scaler=Scaler(config),
             model_loader=ModelLoader(config, versions=model_versions),
             validator=Validator(config, logic=RetroValidatorLogic()),
             validation_results_snapshotter=ValidationResultsSnapshotter(config),

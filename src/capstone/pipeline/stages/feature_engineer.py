@@ -1,37 +1,38 @@
 """
-FeatureEngineer — engineer features on each split, derive feature_cols,
-fit a scaler on train, and produce X/y for train, test, and val.
+FeatureEngineer — derive all features on a single cleaned DataFrame.
 
 Architecture
 ------------
-FeatureEngineerLogic does the column-level work and is fit-free today
-(`engineer_features` is a stack of stateless row-wise transforms). Its
-contract is to apply identical transformations to all three splits and
-return engineered DataFrames. If a stateful transform is added later
-(target encoders, KNN imputers, etc.) it should be fit on df_train only
-and applied to the others.
+FeatureEngineerLogic does the column-level work:
+  - drop rows with bad (NaN/0) baseline medians
+  - call engineer_features (computes target + all derived features)
+  - encode categoricals (tier ordinal, vertical one-hots)
+  - fill NaN/inf with 0
 
-FeatureEngineer (outer) handles X/y split, feature_cols derivation, and
-scaling. Scaling is applied to every model — RF and XGBoost are
-scale-invariant so it does not hurt them, and head-to-head model
-comparison is cleaner when every model sees the same X.
+FeatureEngineer (outer) is a thin stage wrapper: reads run.df_clean,
+calls logic.engineer, writes run.df_engineered. No split awareness, no
+scaling — those are DataSplitter and Scaler's responsibility.
 
 Bad-baseline rows
 -----------------
-A real row with NaN or 0 in baseline_median_views/likes/comments has a
-corrupted target: `compute_target` falls back to baseline_engagement = 0,
-so above_baseline degenerates to engagement_7d > 0. We drop those rows
-in FeatureEngineerLogic *before* `engineer_features` runs so the bad
-target is never produced in the first place.
+A row with NaN or 0 in baseline_median_views/likes/comments has a
+corrupted target (above_baseline degenerates to engagement_7d > 0). We
+drop those rows before engineer_features runs. This is a defensive check;
+DataPreprocessor's left-join already surfaces channels with no baseline
+match as NaN in those columns.
 
-Synthetic data is never present at this stage — it is added downstream
-by SyntheticAugmenter, which applies the same drop policy in its own
-domain.
+derive_feature_cols (module-level)
+-----------------------------------
+Returns the list of feature columns from an engineered df by excluding
+target, IDs, timestamps, raw baselines, and 7d-suffixed metric columns.
+Exported here (not in DataSplitter) because the exclusion list is
+conceptually part of the feature engineering contract. DataSplitter
+imports and calls it to derive X column names without re-implementing the
+logic.
 """
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 
 from data_processing.feature_engineering import engineer_features
 from pipeline.pipeline_run import PipelineRun, Stage
@@ -48,16 +49,15 @@ TIER_ENCODING_ = {tier: i for i, tier in enumerate(TIER_ORDER_)}
 # Education / Lifestyle / Tech (would distort LR coefficients).
 VERTICAL_ORDER_ = ["Education", "Lifestyle", "Tech"]
 
-# Baseline columns whose absence corrupts the target. See module docstring.
+# Baseline columns whose absence corrupts the target.
 BASELINE_REQUIRED_COLS_ = [
     "baseline_median_views",
     "baseline_median_likes",
     "baseline_median_comments",
 ]
 
-# Columns excluded from X. Kept on df_model for post-engineering EDA so
+# Columns excluded from X. Kept on df for post-engineering EDA so
 # plots can still group by vertical/tier and inspect raw baselines.
-# Note: 7d-suffixed metric columns are added dynamically in `feature_cols`.
 EXCLUDE_COLS_ = [
     # IDs and text
     "video_id", "channel_id", "channel_handle", "title", "description", "tags",
@@ -83,42 +83,34 @@ EXCLUDE_COLS_ = [
 ]
 
 
+def derive_feature_cols(df: pd.DataFrame) -> list:
+    """Return the list of feature columns from an engineered DataFrame.
+
+    Excludes the columns listed in EXCLUDE_COLS_ plus any column whose name
+    ends in '_7d' (raw 7-day metric values that would leak the target).
+
+    Single source of truth imported by DataSplitter to derive X column names.
+    """
+    seven_d = [c for c in df.columns if c.endswith("_7d")]
+    excludes = set(EXCLUDE_COLS_) | set(seven_d)
+    return [c for c in df.columns if c not in excludes]
+
+
 class FeatureEngineerLogic:
-    """Stateless column-level feature engineering — testable with just DataFrames."""
+    """Stateless column-level feature engineering — testable with just DataFrames.
 
-    def run(
-        self,
-        df_train: pd.DataFrame,
-        df_test: pd.DataFrame,
-        df_val: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        df_train_eng = self.engineer(df_train, label="train")
-        df_test_eng = self.engineer(df_test, label="test")
-        df_val_eng = self.engineer(df_val, label="val")
-        return df_train_eng, df_test_eng, df_val_eng
-
-    def feature_cols(self, df: pd.DataFrame) -> list:
-        """Derive feature columns from an engineered df by exclusion."""
-        seven_d = [c for c in df.columns if c.endswith("_7d")]
-        excludes = set(EXCLUDE_COLS_) | set(seven_d)
-        return [c for c in df.columns if c not in excludes]
+    Public so SyntheticAugmenter can route new rows through the same chain:
+    engineer() is idempotent for already-engineered columns because each step
+    overwrites derived columns from the same raw source columns. Categorical
+    encoding and fill-missing are NOT applied inside the synth generator, so
+    running engineer() on synth rows correctly aligns them with real X_train.
+    """
 
     def engineer(self, df: pd.DataFrame, label: str = "external") -> pd.DataFrame:
-        """Apply the full engineering chain to a single DataFrame.
-
-        Public so `FeatureEngineer.transform_external` can route synthetic rows
-        through the same chain. Synth rows from `generate_synthetic_data` arrive
-        with most engineered columns already populated; running this chain again
-        is idempotent because each step overwrites engineered columns from the
-        same raw source columns. The categorical encoding + fill-missing steps,
-        however, are *not* applied inside the synth generator — those are the
-        steps that actually align synth with `X_train`.
-        """
+        """Apply the full engineering chain to a single DataFrame."""
         df = self._drop_bad_baselines(df, label=label)
         df = engineer_features(df)
         df = self._encode_categoricals(df)
-        # TODO: revisit per-column fill strategy (e.g. median for thumbnail
-        # features like brightness/colorfulness) once the data is more stable.
         df = self._fill_missing(df, fill_value=0)
         return df
 
@@ -148,8 +140,8 @@ class FeatureEngineerLogic:
     ) -> pd.DataFrame:
         """Fill NaN/inf in `subset` columns with `fill_value`.
 
-        `subset=None` (or empty) means every column. Inf is mapped to NaN
-        first so a future median fill works correctly.
+        `subset=None` means every column. Inf is mapped to NaN first so a
+        future median fill works correctly.
         """
         df = df.copy()
         cols = df.columns.tolist() if not subset else subset
@@ -158,69 +150,13 @@ class FeatureEngineerLogic:
 
 
 class FeatureEngineer:
-    """Stage 4 — outer wrapper. Builds X/y and fits the scaler on train."""
+    """Stage 3 — engineer features on df_clean, write df_engineered."""
 
     def __init__(self, config: VersionConfig, logic: FeatureEngineerLogic = None):
         self.config = config
         self.logic = logic or FeatureEngineerLogic()
-        self.feature_cols_: list = []
-        self.scaler_: StandardScaler = None
 
     def run(self, run: PipelineRun) -> PipelineRun:
         run.assert_ready_for(Stage.ENGINEER)
-
-        df_train, df_test, df_val = self.logic.run(
-            run.df_train, run.df_test, run.df_val
-        )
-        self.feature_cols_ = self.logic.feature_cols(df_train)
-
-        X_train, y_train = self._split_xy(df_train)
-        X_test, y_test = self._split_xy(df_test)
-        X_val, y_val = self._split_xy(df_val)
-
-        self.scaler_ = StandardScaler()
-        X_train = self._scale(X_train, fit=True)
-        X_test = self._scale(X_test, fit=False)
-        # Capture pre-scaling val features so Validator can apply each loaded
-        # model's own historical scaler rather than the current one.
-        run.X_val_unscaled = X_val.copy()
-        X_val = self._scale(X_val, fit=False)
-
-        run.X_train, run.y_train = X_train, y_train
-        run.X_test, run.y_test = X_test, y_test
-        run.X_val, run.y_val = X_val, y_val
-        # df_model: real train, post-engineering, unscaled — for EDA grouping
-        # by vertical/tier and inspecting features in original units.
-        run.df_model = df_train
+        run.df_engineered = self.logic.engineer(run.df_clean, label="all")
         return run
-    def transform_external(
-        self,
-        df: pd.DataFrame,
-        label: str = "external",
-    ) -> tuple[pd.DataFrame, pd.Series]:
-        """Apply already-fitted engineering + scaling to a new DataFrame.
-
-        Used by SyntheticAugmenter to align synth rows with X_train. Routes the
-        df through `FeatureEngineerLogic.engineer` (so categoricals / fill
-        missing apply), splits into X/y, then transforms with the scaler that
-        was fit on real X_train during `run()`. Errors if called before `run()`.
-
-        `fit=False` is critical here — refitting the scaler on synth would
-        destroy the train fit and silently corrupt every downstream prediction.
-        """
-        if self.scaler_ is None:
-            raise RuntimeError(
-                "FeatureEngineer.transform_external called before run() — "
-                "scaler is not fitted yet."
-            )
-        df = self.logic.engineer(df, label=label)
-        X, y = self._split_xy(df)
-        X = self._scale(X, fit=False)
-        return X, y
-
-    def _split_xy(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-        return df[self.feature_cols_].copy(), df[TARGET_COL_].copy()
-
-    def _scale(self, X: pd.DataFrame, fit: bool) -> pd.DataFrame:
-        arr = self.scaler_.fit_transform(X) if fit else self.scaler_.transform(X)
-        return pd.DataFrame(arr, columns=self.feature_cols_, index=X.index)

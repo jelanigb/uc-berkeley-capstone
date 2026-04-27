@@ -43,7 +43,7 @@ from utils.snapshot_data import (
 VIDEO_QUERY_ = f"""
     SELECT *
     FROM `{PROJECT_ID}.{DATASET_ID}.video_snapshots`
-    WHERE poll_label = '7d'
+    WHERE poll_label IS NOT NULL
 """
 
 
