@@ -28,10 +28,6 @@ Usage
 
 Dry run always runs first (even with --yes) so the plan is printed before
 any GCS write begins.
-
-# TODO(print-flag-cleanup): dry-run currently prints some messages that are
-# also printed by live mode; consolidate so each message appears once and
-# only under the correct flag.
 """
 
 import argparse
