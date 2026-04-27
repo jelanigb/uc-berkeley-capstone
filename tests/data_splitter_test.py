@@ -1,11 +1,15 @@
-"""Unit tests for DataSplitter.
+"""Unit tests for DataSplitter and create_holdout.
 
-The headline invariant: no `video_id` from the recorded validation set
-ever appears in df_train or df_test — across both the create path
-(first run) and the load path (subsequent runs, including drift where
-some recorded ids have vanished from df_videos and may reappear later).
+DataSplitter is load-only: it assumes the validation holdout already exists in
+the store and raises with a pointer to create_validation_set.py if it does not.
+One-time holdout creation is exercised via create_holdout() directly.
 
-Tests use an in-memory `HoldoutStore` so no GCS round-trip is needed.
+The headline invariant: no video_id from the recorded validation set ever
+appears in df_train or df_test — across all load-path runs, including drift
+where some recorded ids have vanished from df_engineered and may reappear later.
+
+Tests operate on df_engineered (post-feature-engineering, 1 row per video with
+an above_baseline column), matching the real DataSplitter contract.
 """
 
 import numpy as np
@@ -13,7 +17,7 @@ import pandas as pd
 import pytest
 
 from pipeline.pipeline_run import PipelineRun
-from pipeline.stages.data_splitter import DataSplitter, HoldoutStore
+from pipeline.stages.data_splitter import DataSplitter, HoldoutStore, create_holdout
 
 
 class InMemoryHoldoutStore(HoldoutStore):
@@ -35,18 +39,24 @@ class InMemoryHoldoutStore(HoldoutStore):
         return "<in-memory>"
 
 
-def _make_videos_df(n_per_cell: int = 30, seed: int = 0) -> pd.DataFrame:
-    """3 verticals x 3 tiers, n_per_cell rows each — enough for stratified splits."""
+def _make_df(n_per_cell: int = 30, seed: int = 0) -> pd.DataFrame:
+    """3 verticals × 3 tiers, n_per_cell rows per (vertical, tier).
+
+    above_baseline alternates 0/1 within each cell so the 18-cell
+    stratification key (vertical × tier × above_baseline) is always populated
+    with at least n_per_cell / 2 rows per sub-cell.
+    """
     rng = np.random.default_rng(seed)
     rows = []
     i = 0
     for vertical in ["Education", "Lifestyle", "Tech"]:
         for tier in ["S", "M", "L"]:
-            for _ in range(n_per_cell):
+            for j in range(n_per_cell):
                 rows.append({
                     "video_id": f"v{i:05d}",
                     "vertical": vertical,
                     "tier": tier,
+                    "above_baseline": j % 2,
                     "extra": rng.random(),
                 })
                 i += 1
@@ -55,20 +65,63 @@ def _make_videos_df(n_per_cell: int = 30, seed: int = 0) -> pd.DataFrame:
 
 def _pipeline_run(df: pd.DataFrame) -> PipelineRun:
     run = PipelineRun(config=None)
-    run.df_videos = df
+    run.df_engineered = df
     return run
 
 
-# ---------- create path ----------
+def _payload(video_ids: list) -> dict:
+    return {
+        "created_at": "2026-04-01T00:00:00",
+        "seed": 42,
+        "total_val_rows": len(video_ids),
+        "rows_per_cell": {},
+        "video_ids": list(video_ids),
+    }
 
-def test_create_path_writes_payload_and_no_leak():
-    df = _make_videos_df(n_per_cell=20)
+
+# ---------- DataSplitter — raises when holdout missing ----------
+
+def test_splitter_raises_when_holdout_missing():
+    df = _make_df(n_per_cell=20)
+    store = InMemoryHoldoutStore()           # exists() → False
+    splitter = DataSplitter(config=None, store=store, seed=42)
+    with pytest.raises(RuntimeError, match="create_validation_set"):
+        splitter.run(_pipeline_run(df))
+
+
+# ---------- create_holdout ----------
+
+def test_create_holdout_writes_payload():
+    df = _make_df(n_per_cell=20)
     store = InMemoryHoldoutStore()
-    splitter = DataSplitter(
-        config=None, store=store, confirm=lambda: True, seed=42,
-    )
 
-    out = splitter.run(_pipeline_run(df))
+    payload = create_holdout(df, frac=0.30, store=store, seed=42)
+
+    assert store.payload is not None
+    val_ids = set(payload["video_ids"])
+    assert set(store.payload["video_ids"]) == val_ids
+    assert store.payload["total_val_rows"] == len(val_ids)
+    # Fraction is within 5% of target
+    assert abs(len(val_ids) / len(df) - 0.30) < 0.05
+    # All returned IDs come from the input
+    assert val_ids <= set(df["video_id"])
+
+
+def test_create_holdout_decline_raises_and_does_not_persist():
+    df = _make_df(n_per_cell=20)
+    store = InMemoryHoldoutStore()
+    with pytest.raises(RuntimeError, match="aborted"):
+        create_holdout(df, frac=0.30, store=store, seed=42, confirm=lambda: False)
+    assert store.payload is None
+
+
+def test_create_holdout_then_splitter_produces_disjoint_splits():
+    """Full workflow: create holdout, then run DataSplitter — all splits disjoint."""
+    df = _make_df(n_per_cell=20)
+    store = InMemoryHoldoutStore()
+
+    create_holdout(df, frac=0.30, store=store, seed=42)
+    out = DataSplitter(config=None, store=store, seed=42).run(_pipeline_run(df))
 
     val_ids = set(out.df_val["video_id"])
     train_ids = set(out.df_train["video_id"])
@@ -79,58 +132,15 @@ def test_create_path_writes_payload_and_no_leak():
     assert train_ids.isdisjoint(test_ids)
     assert val_ids | train_ids | test_ids == set(df["video_id"])
 
-    assert store.payload is not None
-    assert set(store.payload["video_ids"]) == val_ids
-    assert store.payload["total_val_rows"] == len(val_ids)
-
-
-def test_create_path_decline_raises_and_does_not_persist():
-    df = _make_videos_df(n_per_cell=10)
-    store = InMemoryHoldoutStore()
-    splitter = DataSplitter(
-        config=None, store=store, confirm=lambda: False, seed=42,
-    )
-
-    with pytest.raises(RuntimeError, match="aborted"):
-        splitter.run(_pipeline_run(df))
-
-    assert store.payload is None
-
-
-def test_create_path_drops_rows_missing_vertical_or_tier():
-    df = _make_videos_df(n_per_cell=20)
-    bad = pd.DataFrame([
-        {"video_id": "bad_v", "vertical": np.nan, "tier": "M", "extra": 0.0},
-        {"video_id": "bad_t", "vertical": "Tech", "tier": np.nan, "extra": 0.0},
-    ])
-    df = pd.concat([df, bad], ignore_index=True)
-
-    store = InMemoryHoldoutStore()
-    splitter = DataSplitter(
-        config=None, store=store, confirm=lambda: True, seed=42,
-    )
-    out = splitter.run(_pipeline_run(df))
-
-    seen = set(out.df_train["video_id"]) | set(out.df_test["video_id"]) | set(out.df_val["video_id"])
-    assert "bad_v" not in seen
-    assert "bad_t" not in seen
-
 
 # ---------- load path ----------
 
 def test_load_path_no_leak_when_all_recorded_ids_present():
-    df = _make_videos_df(n_per_cell=30)
+    df = _make_df(n_per_cell=30)
     recorded = df.groupby(["vertical", "tier"]).head(10)["video_id"].tolist()
-    store = InMemoryHoldoutStore(payload={
-        "created_at": "2026-04-01T00:00:00",
-        "seed": 42,
-        "total_val_rows": len(recorded),
-        "rows_per_cell": {},
-        "video_ids": recorded,
-    })
+    store = InMemoryHoldoutStore(payload=_payload(recorded))
 
-    splitter = DataSplitter(config=None, store=store, seed=42)
-    out = splitter.run(_pipeline_run(df))
+    out = DataSplitter(config=None, store=store, seed=42).run(_pipeline_run(df))
 
     recorded_set = set(recorded)
     assert set(out.df_val["video_id"]) == recorded_set
@@ -141,51 +151,33 @@ def test_load_path_no_leak_when_all_recorded_ids_present():
 def test_load_path_excludes_all_recorded_ids_under_drift():
     """The locked-forever invariant under drift.
 
-    Half the recorded ids have vanished from df_videos. df_val shrinks
-    accordingly, but the train/test pool must still exclude every
-    recorded id — including the surviving ones (so they can't leak now)
-    and the vanished ones (so they can't leak when they reappear later).
+    Half the recorded ids have vanished from df_engineered. df_val shrinks
+    accordingly, but the train/test pool must still exclude every recorded id —
+    including surviving ones (can't leak now) and vanished ones (can't leak
+    when they reappear later).
     """
-    df = _make_videos_df(n_per_cell=30)
+    df = _make_df(n_per_cell=30)
     recorded = df.groupby(["vertical", "tier"]).head(10)["video_id"].tolist()
     vanished = set(recorded[: len(recorded) // 2])
     df_present = df[~df["video_id"].isin(vanished)].reset_index(drop=True)
 
-    store = InMemoryHoldoutStore(payload={
-        "created_at": "2026-04-01T00:00:00",
-        "seed": 42,
-        "total_val_rows": len(recorded),
-        "rows_per_cell": {},
-        "video_ids": recorded,
-    })
-
-    splitter = DataSplitter(config=None, store=store, seed=42)
-    out = splitter.run(_pipeline_run(df_present))
+    out = DataSplitter(config=None, store=InMemoryHoldoutStore(payload=_payload(recorded)), seed=42).run(
+        _pipeline_run(df_present)
+    )
 
     recorded_set = set(recorded)
-    train_ids = set(out.df_train["video_id"])
-    test_ids = set(out.df_test["video_id"])
-    val_ids = set(out.df_val["video_id"])
-
-    assert recorded_set.isdisjoint(train_ids)
-    assert recorded_set.isdisjoint(test_ids)
-    assert val_ids == recorded_set - vanished
+    assert recorded_set.isdisjoint(set(out.df_train["video_id"]))
+    assert recorded_set.isdisjoint(set(out.df_test["video_id"]))
+    assert set(out.df_val["video_id"]) == recorded_set - vanished
 
 
 def test_load_path_does_not_mutate_store():
-    df = _make_videos_df(n_per_cell=30)
+    df = _make_df(n_per_cell=30)
     recorded = df.groupby(["vertical", "tier"]).head(10)["video_id"].tolist()
-    original_payload = {
-        "created_at": "2026-04-01T00:00:00",
-        "seed": 42,
-        "total_val_rows": len(recorded),
-        "rows_per_cell": {},
-        "video_ids": list(recorded),
-    }
+    original_payload = _payload(recorded)
     store = InMemoryHoldoutStore(payload=dict(original_payload))
 
-    splitter = DataSplitter(config=None, store=store, seed=42)
-    splitter.run(_pipeline_run(df.iloc[: len(df) // 2].reset_index(drop=True)))
+    DataSplitter(config=None, store=store, seed=42).run(_pipeline_run(df))
 
     assert store.payload == original_payload
 
@@ -193,14 +185,13 @@ def test_load_path_does_not_mutate_store():
 # ---------- determinism ----------
 
 def test_same_seed_produces_same_splits():
-    df = _make_videos_df(n_per_cell=20)
+    df = _make_df(n_per_cell=20)
+    recorded = df.head(10)["video_id"].tolist()
 
-    store_a = InMemoryHoldoutStore()
-    store_b = InMemoryHoldoutStore()
-    out_a = DataSplitter(config=None, store=store_a, confirm=lambda: True, seed=42).run(
+    out_a = DataSplitter(config=None, store=InMemoryHoldoutStore(payload=_payload(recorded)), seed=42).run(
         _pipeline_run(df)
     )
-    out_b = DataSplitter(config=None, store=store_b, confirm=lambda: True, seed=42).run(
+    out_b = DataSplitter(config=None, store=InMemoryHoldoutStore(payload=_payload(recorded)), seed=42).run(
         _pipeline_run(df)
     )
 

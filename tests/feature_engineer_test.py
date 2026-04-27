@@ -15,6 +15,7 @@ from pipeline.stages.feature_engineer import (
     TARGET_COL_,
     VERTICAL_ORDER_,
     FeatureEngineerLogic,
+    derive_feature_cols,
 )
 
 
@@ -185,7 +186,7 @@ def test_fill_missing_custom_value(logic):
 
 def test_feature_cols_excludes_target(logic):
     df = pd.DataFrame({"above_baseline": [0], "feature_x": [1]})
-    cols = logic.feature_cols(df)
+    cols = derive_feature_cols(df)
     assert "above_baseline" not in cols
     assert "feature_x" in cols
 
@@ -196,7 +197,7 @@ def test_feature_cols_excludes_seven_d_suffixed(logic):
         "view_count_24h": [0],
         "feature_x": [1],
     })
-    cols = logic.feature_cols(df)
+    cols = derive_feature_cols(df)
     assert "view_count_7d" not in cols
     assert "view_count_24h" in cols
     assert "feature_x" in cols
@@ -209,7 +210,7 @@ def test_feature_cols_excludes_raw_categoricals_keeps_encoded(logic):
         "tier_encoded": [1],
         "vertical_Tech": [1],
     })
-    cols = logic.feature_cols(df)
+    cols = derive_feature_cols(df)
     assert "vertical" not in cols
     assert "tier" not in cols
     assert "tier_encoded" in cols
@@ -223,7 +224,7 @@ def test_feature_cols_excludes_raw_baselines_and_intermediates(logic):
         "engagement_7d": [0],
         "feature_x": [1],
     })
-    cols = logic.feature_cols(df)
+    cols = derive_feature_cols(df)
     assert "baseline_median_views" not in cols
     assert "baseline_engagement" not in cols
     assert "engagement_7d" not in cols
@@ -232,12 +233,14 @@ def test_feature_cols_excludes_raw_baselines_and_intermediates(logic):
 
 # ---------- run end-to-end ----------
 
-def test_run_returns_three_engineered_dfs_with_expected_cols(logic):
+def test_engineer_returns_engineered_df_with_expected_cols(logic):
     df_train = _df(_real_row(video_id="t1"), _real_row(video_id="t2"))
     df_test = _df(_real_row(video_id="te1"))
     df_val = _df(_real_row(video_id="v1"))
 
-    out_train, out_test, out_val = logic.run(df_train, df_test, df_val)
+    out_train = logic.engineer(df_train, label="train")
+    out_test = logic.engineer(df_test, label="test")
+    out_val = logic.engineer(df_val, label="val")
 
     for out in (out_train, out_test, out_val):
         assert TARGET_COL_ in out.columns
@@ -248,7 +251,7 @@ def test_run_returns_three_engineered_dfs_with_expected_cols(logic):
     assert set(out_train.columns) == set(out_test.columns) == set(out_val.columns)
 
 
-def test_run_drops_bad_baselines_in_each_split(logic):
+def test_engineer_drops_bad_baselines(logic):
     df_train = _df(
         _real_row(video_id="ok_train"),
         _real_row(video_id="bad_train", baseline_median_views=0),
@@ -262,17 +265,16 @@ def test_run_drops_bad_baselines_in_each_split(logic):
         _real_row(video_id="bad_val", baseline_median_comments=0),
     )
 
-    out_train, out_test, out_val = logic.run(df_train, df_test, df_val)
-    assert list(out_train["video_id"]) == ["ok_train"]
-    assert list(out_test["video_id"]) == ["ok_test"]
-    assert list(out_val["video_id"]) == ["ok_val"]
+    assert list(logic.engineer(df_train, label="train")["video_id"]) == ["ok_train"]
+    assert list(logic.engineer(df_test, label="test")["video_id"]) == ["ok_test"]
+    assert list(logic.engineer(df_val, label="val")["video_id"]) == ["ok_val"]
 
 
-def test_run_feature_cols_excludes_target_and_seven_d(logic):
+def test_engineer_feature_cols_excludes_target_and_seven_d(logic):
     df = _df(_real_row(video_id="v"))
-    out_train, _, _ = logic.run(df, df, df)
+    out = logic.engineer(df, label="all")
 
-    cols = logic.feature_cols(out_train)
+    cols = derive_feature_cols(out)
     assert TARGET_COL_ not in cols
     assert not any(c.endswith("_7d") for c in cols)
     assert "tier_encoded" in cols
