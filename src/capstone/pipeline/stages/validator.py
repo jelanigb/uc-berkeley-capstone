@@ -77,8 +77,19 @@ class ValidatorLogic:
     def _prepare_X(self, entry: dict, X_val_unscaled: pd.DataFrame) -> pd.DataFrame:
         """Select feature columns and apply the entry's scaler (or none)."""
         feature_cols = entry["feature_cols"]
-        X = X_val_unscaled[feature_cols].copy()
+        missing = [c for c in feature_cols if c not in X_val_unscaled.columns]
+        X = X_val_unscaled.reindex(columns=feature_cols)
         scaler = entry.get("scaler")
+        if missing:
+            # Fill with training mean so the column scales to 0 — neutral imputation
+            # for features that were excluded from the pipeline after this model was saved.
+            if scaler is not None:
+                train_means = dict(zip(feature_cols, scaler.mean_))
+                for col in missing:
+                    X[col] = train_means[col]
+            else:
+                X[missing] = 0.0
+            print(f"[Validator] {len(missing)} feature(s) absent from X_val — mean-imputed: {missing}")
         if scaler is not None:
             X = pd.DataFrame(
                 scaler.transform(X),
