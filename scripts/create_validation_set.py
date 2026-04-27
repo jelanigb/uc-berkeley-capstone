@@ -78,7 +78,11 @@ def print_plan(
 ) -> None:
     """Print the full dry-run plan: BQ counts, GCS paths, split sizes, sample IDs."""
 
-    _banner("DRY RUN — NO WRITES TO GCS")
+    if live:
+        _banner("LIVE RUN - WRITES TO GCS")    
+    else:
+        _banner("DRY RUN — NO WRITES TO GCS")
+    
 
     _section("BQ pull + preprocess")
     print(f"  Videos (raw poll rows):   {len(run.df_videos):>7,}")
@@ -96,12 +100,13 @@ def print_plan(
             for v, n in sorted(v_counts.items()):
                 print(f"    {v}: {n:,}")
 
-    _section(f"Raw snapshot  →  version '{config.raw_version}'  (would write)")
+    _section(f"Raw snapshot  →  version '{config.raw_version}'. Will {'' if live else 'not'} write to GCS")
     ts_placeholder = "<YYYYmmdd_HHMMSS>"
     bucket = BUCKET_NAME
     nrows = len(run.df_videos) if run.df_videos is not None else "?"
     nb = len(run.df_baselines) if run.df_baselines is not None else "?"
     nm = len(run.df_medians) if run.df_medians is not None else "?"
+    print(f"{'Writing:' if live else 'Simulating:'}")
     print(f"  gs://{bucket}/snapshots/snapshots_{config.raw_version}_{nrows}rows_{ts_placeholder}.parquet")
     print(f"  gs://{bucket}/snapshots/snapshots_{config.raw_version}_{nrows}rows_{ts_placeholder}_meta.json")
     print(f"  gs://{bucket}/snapshots/baselines_{config.raw_version}_{nb}rows_{ts_placeholder}.parquet")
@@ -110,7 +115,7 @@ def print_plan(
 
     payload = dry_store.payload_
     if payload:
-        _section(f"Validation holdout  →  {dry_store.location()}  (would write)")
+        _section(f"Validation holdout  →  {dry_store.location()}. Will {'' if live else 'not'} write to GCS")
         total = len(run.df_engineered)
         n_val = payload["total_val_rows"]
         n_remaining = total - n_val
@@ -126,14 +131,13 @@ def print_plan(
         for vid in sample_ids:
             print(f"    {vid}")
 
-    _section("Version bump")
+    _section(f"{'' if live else 'simluated'} Version bump")
     cur_data = config.state_["data"]
     print(f"  raw_version:  v{cur_data['major']}.{cur_data['minor']}_{cur_data['raw_suffix']}  →  {config.raw_version}")
-    print(f"  (config.commit() will be called on --yes run)")
+    print(f"  (config.commit() will be called if --yes flag is used)")
 
-    print(f"\n{'═' * 68}")
-    print("  Re-run with --yes to execute all writes.")
-    print(f"{'═' * 68}\n")
+    plan_msg_ = ('Will write to GCS' if live else 'Dry run; will not write to GCS')
+    _banner(f"Plan complete. {plan_msg_}")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
