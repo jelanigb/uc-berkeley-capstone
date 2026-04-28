@@ -13,3 +13,4 @@ maduros-dolce-*.json   # project-specific pattern
 models/
 *.pkl
 *.parquet
+data/
