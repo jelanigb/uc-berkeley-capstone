@@ -1,11 +1,13 @@
 """
 VersionConfig — builder-pattern orchestrator for a single pipeline run.
 
-Carries three independently-versioned entities — base data, model, and
-hyperparameters — each with its own major.minor counter in GCS at
-`config/versions.json`. Also carries run-wide flags consumed by the stage
-classes (e.g. `use_synthetic`, `tune_models`) and the search config consumed
-by `PipelineFactory` when wiring the trainer.
+Carries four independently-versioned entities — base data, model, baselines 
+(which includes medians) and hyperparameters — each with its own major.minor 
+counter in GCS at `config/versions.json`. 
+
+Also carries run-wide flags consumed by the stage classes (e.g. 
+`use_synthetic`, `tune_models`) and the search config consumed by 
+`PipelineFactory` when wiring the trainer.
 
 Bump rules (summary):
     Base Data
@@ -14,6 +16,8 @@ Bump rules (summary):
     Model
       .snapshot_models()                          -> model minor bump (props / hyperparams changed)
       .snapshot_models_new_data()                 -> model major bump (retrained on new data)
+    Baselines
+      .snapshot_baselines()                       -> baselines major bump (new pull, same schema)
     Hyperparameters
       .snapshot_hyperparams()                     -> hyperparams minor bump (values tweaked)
       .snapshot_hyperparams_new_grid()            -> hyperparams major bump (new param added to grid)
@@ -38,6 +42,7 @@ import json
 import re
 from datetime import datetime
 from enum import Enum
+from typing import Optional
 
 from google.cloud import storage
 
@@ -45,7 +50,7 @@ from constants import PROJECT_ID, BUCKET_NAME
 
 VERSIONS_BLOB_ = "config/versions.json"
 
-DEFAULT_SYNTHETIC_REAL_PCT_ = 0.8
+DEFAULT_SYNTHETIC_REAL_PCT_ = 0.9
 
 
 class Flag(Enum):
@@ -59,6 +64,7 @@ class Flag(Enum):
     DATA_MAJOR = "data_major"
     MODELS = "models"
     MODEL_MAJOR = "model_major"
+    BASELINES_MAJOR = "baselines"
     HYPERPARAMS = "hyperparams"
     HYPERPARAMS_MAJOR = "hyperparams_major"
     TUNE = "tune"
@@ -87,6 +93,7 @@ DEFAULT_STATE_ = {
         "minor": 1,
         "raw_suffix": "real",
     },
+    "baselines": {"major": 3, "minor": 0},
     "model": {"major": 3, "minor": 1},
     "hyperparams": {"major": 1, "minor": 0},
     "last_updated": None,
@@ -121,16 +128,20 @@ class VersionConfig:
 
         # Pinning — set by use_*_version methods
         self.pinned_data_version_ = None
+        self.pinned_baselines_version_ = None
+        self.pinned_raw_suffix_ = None
         self.pinned_model_version_ = None
         self.pinned_hyperparam_version_ = None
 
         # Computed new versions (major, minor) per entity — set by build()
         self.new_data_ = None
+        self.new_baselines_ = None
         self.new_model_ = None
         self.new_hyperparams_ = None
 
         # Public version strings — set by build()
         self.raw_version = None
+        self.baselines_version = None
         self.final_version = None
         self.model_version = None
         self.hyperparam_version = None
@@ -183,12 +194,14 @@ class VersionConfig:
             )
 
         d = state["data"]
+        b = state["baselines"]
         m = state["model"]
         h = state["hyperparams"]
         _synth_pct = round((target_real_pct or DEFAULT_SYNTHETIC_REAL_PCT_) * 100) if use_synthetic else None
         print(
             f"VersionConfig loaded:\n"
             f"  data:          v{d['major']}.{d['minor']} (raw_suffix='{d['raw_suffix']}')\n"
+            f"  baselines:     v{b['major']}.{d['minor']}\n"
             f"  model:         v{m['major']}.{m['minor']}\n"
             f"  hyperparams:   v{h['major']}.{h['minor']}\n"
             f"  use_synthetic: {use_synthetic}"
@@ -212,6 +225,7 @@ class VersionConfig:
                 "raw_suffix": flat.get("raw_suffix", "real"),
             },
             "model": {"major": major, "minor": minor},
+            "baselines": {"major": major, "minor": 0},
             "hyperparams": {"major": 1, "minor": 0},
             "last_updated": flat.get("last_updated"),
             "last_snapshot_types": flat.get("last_snapshot_types", []),
@@ -240,9 +254,11 @@ class VersionConfig:
         """
         Mark this data snapshot as a schema change (different columns). Upgrades
         any active data write (raw / final) to a data major bump with minor = 0.
+        Also bumps the baselines version the same way.
         Call alongside .snapshot_raw() and/or .snapshot_final().
         """
         self.flags_[Flag.DATA_MAJOR] = True
+        self.flags_[Flag.BASELINES_MAJOR] = True
         return self
 
     def snapshot_models(self) -> "VersionConfig":
@@ -256,6 +272,7 @@ class VersionConfig:
         upgrade from a data version bump in the same session."""
         self.flags_[Flag.MODELS] = True
         self.flags_[Flag.MODEL_MAJOR] = True
+        self.flags_[Flag.BASELINES_MAJOR] = True
         return self
 
     def snapshot_hyperparams(self) -> "VersionConfig":
@@ -299,14 +316,31 @@ class VersionConfig:
         self.new_grids = new_grids or {}
         return self
 
-    def use_data_version(self, version: str) -> "VersionConfig":
+    def use_data_version(self, version: str, suffix: str = None) -> "VersionConfig":
         """Pin raw/final versions to an existing data snapshot. Model and
         hyperparam versions still bump independently based on their own flags.
+
+        Parameters
+        ----------
+        suffix : str, optional
+            Override the raw-version suffix (default: state raw_suffix, usually
+            "real"). Pass the full suffix as it appears in the GCS path, e.g.
+            "mixed_80real".
 
         Raises if any data-write or schema-change flag is set — pinning means
         reusing an existing snapshot, which those flags would overwrite.
         """
         self.pinned_data_version_ = self.parse_pinned_version_(version)
+        if suffix is not None:
+            self.pinned_raw_suffix_ = suffix
+        return self
+
+    def use_baselines_version(self, version:str) -> "VersionConfig":
+        """
+        Override method if for any reason baselines and medians versions are missing
+        for a given data version.
+        """
+        self.pinned_baselines_version_ = self.parse_pinned_version_(version)
         return self
 
     def use_model_version(self, version: str) -> "VersionConfig":
@@ -330,6 +364,7 @@ class VersionConfig:
         Three entities bump independently:
 
           data:        raw/final       -> minor; schema_change        -> major
+          baselines:   baselines and medians -> should mirror data major
           model:       models          -> minor; models_new_data      -> major
           hyperparams: hyperparams     -> minor; hyperparams_new_grid -> major
 
@@ -347,13 +382,21 @@ class VersionConfig:
             write_flag=self.flags_[Flag.MODELS],
             major_flag=self.flags_[Flag.MODEL_MAJOR],
         )
+        # Baselines should be pegged to data version by default
+        self.new_baselines_ = self.compute_new_version_(
+            current=(self.state_["baselines"]["major"], 
+                self.state_["baselines"]["minor"]),
+            # Sync with any data-writing activity
+            write_flag=self.flags_[Flag.DATA_MAJOR],
+            major_flag=self.flags_[Flag.DATA_MAJOR],
+        )
         self.new_hyperparams_ = self.compute_new_version_(
             current=(self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"]),
             write_flag=self.flags_[Flag.HYPERPARAMS],
             major_flag=self.flags_[Flag.HYPERPARAMS_MAJOR],
         )
 
-        raw_sfx = self.state_["data"]["raw_suffix"]
+        raw_sfx = self.pinned_raw_suffix_ or self.state_["data"]["raw_suffix"]
         if self.use_synthetic_:
             real_pct = round(self.target_real_pct_ * 100)
             final_sfx = f"mixed_{real_pct}real"
@@ -362,11 +405,13 @@ class VersionConfig:
 
         data_v = self.pinned_data_version_ or self.new_data_
         model_v = self.pinned_model_version_ or self.new_model_
+        baselines_v = self.pinned_baselines_version_ or self.new_baselines_
         hyperparam_v = self.pinned_hyperparam_version_ or self.new_hyperparams_
 
         self.raw_version = f"v{data_v[0]}.{data_v[1]}_{raw_sfx}"
         self.final_version = f"v{data_v[0]}.{data_v[1]}_{final_sfx}"
         self.model_version = f"v{model_v[0]}.{model_v[1]}"
+        self.baselines_version = f"v{baselines_v[0]}.{baselines_v[1]}"
         self.hyperparam_version = f"v{hyperparam_v[0]}.{hyperparam_v[1]}"
         self.built_ = True
 
@@ -384,6 +429,11 @@ class VersionConfig:
         if self.pinned_model_version_ and self.flags_[Flag.MODELS]:
             raise ValueError(
                 "Cannot pin model version while snapshot_models() is active — "
+                "the pinned version would be overwritten."
+            )
+        if self.pinned_baselines_version_ and self.flags_[Flag.BASELINES_MAJOR]:
+            raise ValueError(
+                "Cannot pin baselines version while snapshot_baselines() is active — "
                 "the pinned version would be overwritten."
             )
         if self.pinned_hyperparam_version_ and self.flags_[Flag.HYPERPARAMS]:
@@ -405,6 +455,7 @@ class VersionConfig:
     def print_build_summary_(self):
         active = [k.value for k, v in self.flags_.items() if v]
         d_cur = (self.state_["data"]["major"], self.state_["data"]["minor"])
+        b_cur = (self.state_["baselines"]["major"], self.state_["baselines"]["minor"])
         m_cur = (self.state_["model"]["major"], self.state_["model"]["minor"])
         h_cur = (self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"])
 
@@ -416,15 +467,21 @@ class VersionConfig:
         print(f"  data              : {arrow_(d_cur, self.new_data_)}"
               + (f"  [pinned -> v{self.pinned_data_version_[0]}.{self.pinned_data_version_[1]}]"
                  if self.pinned_data_version_ else ""))
+        print(f"  baselines         : {arrow_(b_cur, self.new_baselines_)}"
+              + (f"  [pinned -> v{self.pinned_baselines_version_[0]}.{self.pinned_baselines_version_[1]}]"
+                 if self.pinned_baselines_version_ else ""))
         print(f"  model             : {arrow_(m_cur, self.new_model_)}"
               + (f"  [pinned -> v{self.pinned_model_version_[0]}.{self.pinned_model_version_[1]}]"
                  if self.pinned_model_version_ else ""))
         print(f"  hyperparams       : {arrow_(h_cur, self.new_hyperparams_)}"
               + (f"  [pinned -> v{self.pinned_hyperparam_version_[0]}.{self.pinned_hyperparam_version_[1]}]"
                  if self.pinned_hyperparam_version_ else ""))
-        print(f"  raw_version       : {self.raw_version}")
+        print(f"  raw_version       : {self.raw_version}"
+              + (f"  [suffix overridden -> '{self.pinned_raw_suffix_}']"
+                 if self.pinned_raw_suffix_ else ""))
         print(f"  final_version     : {self.final_version}")
         print(f"  model_version     : {self.model_version}")
+        print(f"  baselines_version : {self.baselines_version}")        
         print(f"  hyperparam_version: {self.hyperparam_version}")
         print(f"  use_synthetic     : {self.use_synthetic_}")
         if self.flags_[Flag.TUNE]:
@@ -456,6 +513,7 @@ class VersionConfig:
                 "raw_suffix": self.state_["data"]["raw_suffix"],
             },
             "model": {"major": self.new_model_[0], "minor": self.new_model_[1]},
+            "baselines": {"major": self.new_baselines_[0], "minor": self.new_baselines_[1]},
             "hyperparams": {"major": self.new_hyperparams_[0], "minor": self.new_hyperparams_[1]},
             "last_updated": datetime.utcnow().isoformat(),
             "last_snapshot_types": [k.value for k, v in self.flags_.items() if v],
@@ -469,11 +527,13 @@ class VersionConfig:
         )
         d = new_state["data"]
         m = new_state["model"]
+        b = new_state["baselines"]
         h = new_state["hyperparams"]
         print(
             f"Committed versions.json -> "
             f"data v{d['major']}.{d['minor']}, "
             f"model v{m['major']}.{m['minor']}, "
+            f"baselines v{b['major']}.{b['minor']}, "
             f"hyperparams v{h['major']}.{h['minor']}"
         )
 
@@ -492,6 +552,10 @@ class VersionConfig:
     @property
     def take_snapshot_models(self) -> bool:
         return self.flags_[Flag.MODELS]
+    
+    @property
+    def take_snapshot_baselines(self) -> bool:
+        return self.flags_[Flag.BASELINES_MAJOR]
 
     @property
     def take_snapshot_hyperparams(self) -> bool:
@@ -543,6 +607,7 @@ class VersionConfig:
         if self.built_:
             active = [k.value for k, v in self.flags_.items() if v]
             return (f"VersionConfig(data={self.new_data_}, model={self.new_model_}, "
+                    f"baselines={self.new_baselines_}, "
                     f"hyperparams={self.new_hyperparams_}, "
                     f"use_synthetic={self.use_synthetic_}, active={active})")
         return "VersionConfig(not built — call .build())"

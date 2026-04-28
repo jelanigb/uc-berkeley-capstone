@@ -124,6 +124,18 @@ class PipelineRun:
             val = getattr(self, name)
             print(f"  {name:13s}  {describe_field_(val)}")
 
+    def __repr__(self) -> str:
+        populated = [
+            n for n in SUMMARY_FIELDS_
+            if (v := getattr(self, n)) is not None
+            and not (isinstance(v, (dict, list)) and not v)
+        ]
+        return (
+            f"PipelineRun(model_version={self.config.model_version!r}, "
+            f"num_synth_rows={self.num_synth_rows}, "
+            f"populated={populated})"
+        )
+
 
 def describe_field_(val) -> str:
     if val is None:

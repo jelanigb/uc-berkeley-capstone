@@ -27,6 +27,7 @@ plus an inline video query that mirrors the one inside
 
 import pandas as pd
 from google.cloud import bigquery
+from typing import Optional
 
 from constants import PROJECT_ID
 from pipeline.pipeline_run import PipelineRun, Stage
@@ -70,7 +71,8 @@ class DataLoader:
             df_videos, df_baselines, df_medians = self._load_from_bq()
         else:
             df_videos, df_baselines, df_medians = self._load_from_gcs(
-                self.config.raw_version
+                self.config.raw_version,
+                self.config.baselines_version,
             )
 
         run.df_videos = df_videos
@@ -101,7 +103,14 @@ class DataLoader:
     def _load_from_gcs(
         self,
         raw_version: str,
+        baselines_version: Optional[str] = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """
+        Supports ability to pull separate video and baseline files. They should 
+        normally be the same but for some past versions the baseline data is missing.
+        """
+
         df_videos, _ = load_videos(raw_version)
-        df_baselines, df_medians, _ = load_baselines(raw_version)
+        baselines_version_ = baselines_version if baselines_version else raw_version
+        df_baselines, df_medians, _ = load_baselines(baselines_version_)
         return df_videos, df_baselines, df_medians

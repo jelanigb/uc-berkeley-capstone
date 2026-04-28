@@ -141,6 +141,8 @@ def build_clean_dataset(
     print("Building clean dataset")
     print("=" * 60)
 
+    print(f"snapshot cols: {df_snapshots.columns}")
+
     print("\n[1/3] Pivoting snapshots...")
     df_wide = pivot_snapshots(df_snapshots)
 
