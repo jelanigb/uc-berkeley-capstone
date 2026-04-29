@@ -78,6 +78,11 @@ def get_default_param_grid(model) -> dict:
         )
     return _PARAM_GRIDS[class_name].copy()
 
+def get_default_param_grid_by_name(name: str) -> dict:
+    return _PARAM_GRIDS[name]
+
+def get_all_default_param_grids() -> dict:
+    return _PARAM_GRIDS
 
 def tune_model(
     model,

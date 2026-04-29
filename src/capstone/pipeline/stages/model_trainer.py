@@ -80,10 +80,18 @@ class ModelTrainerLogic:
         if config.tune_models:
             params = self._tune(X_train, y_train, params, config)
 
-        lr = LogisticRegression(random_state=RANDOM_SEED_, **params["LogisticRegression"])
-        rf = RandomForestClassifier(random_state=RANDOM_SEED_, n_jobs=-1, **params["RandomForestClassifier"])
+        lr = LogisticRegression(
+            random_state=RANDOM_SEED_, **params["LogisticRegression"]
+        )
+        rf = RandomForestClassifier(
+            random_state=RANDOM_SEED_,
+            n_jobs=-1,
+            **params["RandomForestClassifier"],
+        )
         xgb = XGBClassifier(
-            random_state=RANDOM_SEED_, n_jobs=-1, eval_metric="logloss",
+            random_state=RANDOM_SEED_,
+            n_jobs=-1,
+            eval_metric="logloss",
             **params["XGBClassifier"],
         )
 
@@ -98,17 +106,28 @@ class ModelTrainerLogic:
 
         # Ensemble uses fresh RF/XGB instances with the same best params so
         # VotingClassifier manages its own fitted copies internally.
-        print("Training VotingClassifier ensemble (RF + XGB, weights=[1, 2])...")
+        print(
+            "Training VotingClassifier ensemble (RF + XGB, weights=[1, 2])..."
+        )
         ensemble = VotingClassifier(
             estimators=[
-                ("rf", RandomForestClassifier(
-                    random_state=RANDOM_SEED_, n_jobs=-1,
-                    **params["RandomForestClassifier"],
-                )),
-                ("xgb", XGBClassifier(
-                    random_state=RANDOM_SEED_, n_jobs=-1, eval_metric="logloss",
-                    **params["XGBClassifier"],
-                )),
+                (
+                    "rf",
+                    RandomForestClassifier(
+                        random_state=RANDOM_SEED_,
+                        n_jobs=-1,
+                        **params["RandomForestClassifier"],
+                    ),
+                ),
+                (
+                    "xgb",
+                    XGBClassifier(
+                        random_state=RANDOM_SEED_,
+                        n_jobs=-1,
+                        eval_metric="logloss",
+                        **params["XGBClassifier"],
+                    ),
+                ),
             ],
             voting="soft",
             weights=[1, 2],
@@ -121,16 +140,26 @@ class ModelTrainerLogic:
             synthetic_train_rows=num_synth_rows,
             total_train_rows=total_train,
             test_rows=len(X_test),
-            synthetic_pct=round(num_synth_rows / total_train * 100, 1) if total_train > 0 else 0,
+            synthetic_pct=(
+                round(num_synth_rows / total_train * 100, 1)
+                if total_train > 0
+                else 0
+            ),
             target_balance_train=y_train.value_counts().to_dict(),
             target_balance_test=y_test.value_counts().to_dict(),
         )
 
         entries = {
-            "lr_l1": self._entry(lr, X_test, y_test, feature_cols, training_data),
+            "lr_l1": self._entry(
+                lr, X_test, y_test, feature_cols, training_data
+            ),
             "rf": self._entry(rf, X_test, y_test, feature_cols, training_data),
-            "xgb": self._entry(xgb, X_test, y_test, feature_cols, training_data),
-            "ensemble": self._entry(ensemble, X_test, y_test, feature_cols, training_data),
+            "xgb": self._entry(
+                xgb, X_test, y_test, feature_cols, training_data
+            ),
+            "ensemble": self._entry(
+                ensemble, X_test, y_test, feature_cols, training_data
+            ),
         }
         self._print_summary(entries)
         return entries
@@ -146,7 +175,9 @@ class ModelTrainerLogic:
         return {
             "model": model,
             "training_data": training_data,
-            "result": ModelResult.from_sklearn(model, X_test, y_test, feature_cols),
+            "result": ModelResult.from_sklearn(
+                model, X_test, y_test, feature_cols
+            ),
             "model_config": ModelConfig.from_model(model),
         }
 
@@ -154,7 +185,9 @@ class ModelTrainerLogic:
         """Load params from GCS hyperparam snapshot; fall back to VersionConfig defaults."""
         try:
             stored = load_hyperparams(config.hyperparam_version)
-            print(f"Loaded hyperparams from snapshot '{config.hyperparam_version}'.")
+            print(
+                f"Loaded hyperparams from snapshot '{config.hyperparam_version}'."
+            )
             return stored["params"]
         except FileNotFoundError:
             print(
@@ -177,17 +210,29 @@ class ModelTrainerLogic:
         """Run hyperparameter search for LR, RF, XGB; return updated params."""
         tuned = dict(current_params)
         candidates = [
-            ("LogisticRegression", LogisticRegression(random_state=RANDOM_SEED_)),
-            ("RandomForestClassifier", RandomForestClassifier(random_state=RANDOM_SEED_, n_jobs=-1)),
-            ("XGBClassifier", XGBClassifier(
-                random_state=RANDOM_SEED_, n_jobs=-1, eval_metric="logloss"
-            )),
+            (
+                "LogisticRegression",
+                LogisticRegression(random_state=RANDOM_SEED_),
+            ),
+            (
+                "RandomForestClassifier",
+                RandomForestClassifier(random_state=RANDOM_SEED_, n_jobs=-1),
+            ),
+            (
+                "XGBClassifier",
+                XGBClassifier(
+                    random_state=RANDOM_SEED_, n_jobs=-1, eval_metric="logloss"
+                ),
+            ),
         ]
         for model_cls, base_model in candidates:
-            param_grid = (
-                config.new_grids.get(model_cls)
-                or get_default_param_grid(base_model)
+            param_grid = config.new_grids.get(
+                model_cls
+            ) or get_default_param_grid(base_model)
+            print(
+                f"{'Using overriden param_grid via new_grids=' if config.new_grids.get(model_cls) else ''}"
             )
+            print(f"Using param_grid: {param_grid}")
             result = tune_model(
                 base_model,
                 X_train,
@@ -239,8 +284,10 @@ class ModelTrainer:
         run.assert_ready_for(Stage.TRAIN)
 
         entries = self.logic.run(
-            run.X_train, run.y_train,
-            run.X_test, run.y_test,
+            run.X_train,
+            run.y_train,
+            run.X_test,
+            run.y_test,
             self.config,
             num_synth_rows=run.num_synth_rows,
         )

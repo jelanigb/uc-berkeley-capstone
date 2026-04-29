@@ -36,7 +36,19 @@ class RawSnapshotter:
             )
 
         version_tag = self.config.next_raw_version
-        save_video_snapshot(run.df_videos, version_tag)
-        save_baselines_snapshot(run.df_baselines, run.df_medians, version_tag)
+        baselines_tag = self.config.next_baselines_version
+        
+        # It's possible that baseline version will not exist but video version
+        # does, so try both.
+        try:
+            save_video_snapshot(run.df_videos, version_tag)
+        except ValueError as e:
+            print(e)
+        try:
+            save_baselines_snapshot(run.df_baselines, run.df_medians, baselines_tag)
+        except ValueError as e:
+            print(e)
+        
         print(f"[RawSnapshotter] Raw snapshot '{version_tag}' saved to GCS.")
+        print(f"[RawSnappshotter] Baseline snapshot '{baselines_tag}' saved to GCS.")
         return run

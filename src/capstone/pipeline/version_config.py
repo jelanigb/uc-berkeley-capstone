@@ -92,11 +92,11 @@ DEFAULT_ENSEMBLE_PARAMS_ = {
 DEFAULT_STATE_ = {
     "data": {
         "major": 3,
-        "minor": 2,
+        "minor": 3,
         "raw_suffix": "real",
     },
-    "baselines": {"major": 3, "minor": 2},
-    "model": {"major": 4, "minor": 0},
+    "baselines": {"major": 3, "minor": 3},
+    "model": {"major": 5, "minor": 0},
     "hyperparams": {"major": 1, "minor": 0},
     "last_updated": None,
     "last_snapshot_types": [],
