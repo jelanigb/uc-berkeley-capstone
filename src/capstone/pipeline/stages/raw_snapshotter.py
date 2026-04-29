@@ -35,7 +35,7 @@ class RawSnapshotter:
                 "Did DataLoader.run() complete?"
             )
 
-        version_tag = self.config.raw_version
+        version_tag = self.config.next_raw_version
         save_video_snapshot(run.df_videos, version_tag)
         save_baselines_snapshot(run.df_baselines, run.df_medians, version_tag)
         print(f"[RawSnapshotter] Raw snapshot '{version_tag}' saved to GCS.")

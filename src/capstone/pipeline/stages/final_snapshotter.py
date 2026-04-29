@@ -36,7 +36,7 @@ class FinalSnapshotter:
                 "Did FeatureEngineer.run() (and SyntheticAugmenter.run()) complete?"
             )
 
-        version_tag = self.config.final_version
+        version_tag = self.config.next_final_version
         save_splits_snapshot(
             run.X_train, run.y_train,
             run.X_test, run.y_test,

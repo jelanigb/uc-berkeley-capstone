@@ -4,7 +4,7 @@ ModelSnapshotter — persist fitted models from run.models to GCS.
 Write-side counterpart to ModelLoader. Gated by config.take_snapshot_models;
 a no-op when that flag is False. Calls utils.snapshot_model.save_model once
 per entry in run.models, building the full GCS version tag as
-f"{config.model_version}_{model_name}" (e.g. "v4.0_lr_l1").
+f"{config.next_model_version}_{model_name}" (e.g. "v4.0_lr_l1").
 
 Expected shape of each run.models entry (populated by ModelTrainer):
 
@@ -46,13 +46,13 @@ class ModelSnapshotter:
             )
 
         for model_name, entry in run.models.items():
-            version_tag = f"{self.config.model_version}_{model_name}"
+            version_tag = f"{self.config.next_model_version}_{model_name}"
             save_model(
                 model=entry["model"],
                 scaler=entry["scaler"],
                 feature_cols=entry["feature_cols"],
                 version_tag=version_tag,
-                data_snapshot_tag=self.config.final_version,
+                data_snapshot_tag=self.config.next_final_version,
                 training_data=entry["training_data"],
                 result=entry["result"],
                 config=entry["model_config"],
@@ -60,6 +60,6 @@ class ModelSnapshotter:
 
         print(
             f"[ModelSnapshotter] Saved {len(run.models)} model(s) "
-            f"under '{self.config.model_version}_*'."
+            f"under '{self.config.next_model_version}_*'."
         )
         return run

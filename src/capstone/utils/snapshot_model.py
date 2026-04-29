@@ -395,7 +395,7 @@ def save_validation_results(results: dict, config) -> str:
     gcs_client = storage.Client(project=PROJECT_ID)
     bucket = gcs_client.bucket(BUCKET_NAME)
 
-    model_version = config.model_version
+    model_version = config.next_model_version
     data_version = config.raw_version
     blob_path = f"models/{model_version}/validation_results.jsonl"
     blob = bucket.blob(blob_path)

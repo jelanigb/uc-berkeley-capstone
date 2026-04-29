@@ -141,12 +141,18 @@ class VersionConfig:
         self.new_model_ = None
         self.new_hyperparams_ = None
 
-        # Public version strings — set by build()
+        # Public version strings — set by build().
+        # Unprefixed = current (pre-bump): what loaders read from GCS.
+        # next_*     = target  (post-bump): what snapshotters write to GCS.
         self.raw_version = None
         self.baselines_version = None
-        self.final_version = None
         self.model_version = None
         self.hyperparam_version = None
+        self.next_raw_version = None
+        self.next_final_version = None       # no pre-bump final; nothing loads it
+        self.next_model_version = None
+        self.next_baselines_version = None
+        self.next_hyperparam_version = None
 
     # =========================================================================
     # Factory
@@ -405,16 +411,36 @@ class VersionConfig:
         else:
             final_sfx = "100real"
 
+        # Post-bump (target) — what snapshotters write to.
+        # Pinning overrides the bump; if pinned, next_* == current (no write will happen).
         data_v = self.pinned_data_version_ or self.new_data_
         model_v = self.pinned_model_version_ or self.new_model_
         baselines_v = self.pinned_baselines_version_ or self.new_baselines_
         hyperparam_v = self.pinned_hyperparam_version_ or self.new_hyperparams_
 
-        self.raw_version = f"v{data_v[0]}.{data_v[1]}_{raw_sfx}"
-        self.final_version = f"v{data_v[0]}.{data_v[1]}_{final_sfx}"
-        self.model_version = f"v{model_v[0]}.{model_v[1]}"
-        self.baselines_version = f"v{baselines_v[0]}.{baselines_v[1]}"
-        self.hyperparam_version = f"v{hyperparam_v[0]}.{hyperparam_v[1]}"
+        self.next_raw_version = f"v{data_v[0]}.{data_v[1]}_{raw_sfx}"
+        self.next_final_version = f"v{data_v[0]}.{data_v[1]}_{final_sfx}"
+        self.next_model_version = f"v{model_v[0]}.{model_v[1]}"
+        self.next_baselines_version = f"v{baselines_v[0]}.{baselines_v[1]}"
+        self.next_hyperparam_version = f"v{hyperparam_v[0]}.{hyperparam_v[1]}"
+
+        # Pre-bump (current) — what loaders read from GCS.
+        # Uses state_ directly so it always reflects what actually exists.
+        # Pinning overrides: a pinned version is the intended read target.
+        d = self.state_["data"]
+        m = self.state_["model"]
+        b = self.state_["baselines"]
+        h = self.state_["hyperparams"]
+        cur_data = self.pinned_data_version_ or (d["major"], d["minor"])
+        cur_model = self.pinned_model_version_ or (m["major"], m["minor"])
+        cur_baselines = self.pinned_baselines_version_ or (b["major"], b["minor"])
+        cur_hyperparams = self.pinned_hyperparam_version_ or (h["major"], h["minor"])
+
+        self.raw_version = f"v{cur_data[0]}.{cur_data[1]}_{raw_sfx}"
+        self.model_version = f"v{cur_model[0]}.{cur_model[1]}"
+        self.baselines_version = f"v{cur_baselines[0]}.{cur_baselines[1]}"
+        self.hyperparam_version = f"v{cur_hyperparams[0]}.{cur_hyperparams[1]}"
+
         self.built_ = True
 
         self.print_build_summary_()
@@ -435,7 +461,8 @@ class VersionConfig:
             )
         if self.pinned_baselines_version_ and self.flags_[Flag.BASELINES_MAJOR]:
             raise ValueError(
-                "Cannot pin baselines version while snapshot_baselines() is active — "
+                "Cannot pin baselines version while a baselines bump is active "
+                "(triggered by snapshot_raw() or snapshot_models_new_data()) — "
                 "the pinned version would be overwritten."
             )
         if self.pinned_hyperparam_version_ and self.flags_[Flag.HYPERPARAMS]:
@@ -478,13 +505,17 @@ class VersionConfig:
         print(f"  hyperparams       : {arrow_(h_cur, self.new_hyperparams_)}"
               + (f"  [pinned -> v{self.pinned_hyperparam_version_[0]}.{self.pinned_hyperparam_version_[1]}]"
                  if self.pinned_hyperparam_version_ else ""))
-        print(f"  raw_version       : {self.raw_version}"
-              + (f"  [suffix overridden -> '{self.pinned_raw_suffix_}']"
-                 if self.pinned_raw_suffix_ else ""))
-        print(f"  final_version     : {self.final_version}")
-        print(f"  model_version     : {self.model_version}")
-        print(f"  baselines_version : {self.baselines_version}")        
-        print(f"  hyperparam_version: {self.hyperparam_version}")
+        def ver_arrow_(current, nxt):
+            if current == nxt:
+                return current
+            return f"{current}  ->  {nxt}"
+
+        sfx_note = f"  [suffix overridden -> '{self.pinned_raw_suffix_}']" if self.pinned_raw_suffix_ else ""
+        print(f"  raw_version       : {ver_arrow_(self.raw_version, self.next_raw_version)}{sfx_note}")
+        print(f"  next_final_version: {self.next_final_version}")
+        print(f"  model_version     : {ver_arrow_(self.model_version, self.next_model_version)}")
+        print(f"  baselines_version : {ver_arrow_(self.baselines_version, self.next_baselines_version)}")
+        print(f"  hyperparam_version: {ver_arrow_(self.hyperparam_version, self.next_hyperparam_version)}")
         print(f"  use_synthetic     : {self.use_synthetic_}")
         if self.flags_[Flag.TUNE]:
             print(f"  Tuning            : strategy={self.search_strategy}, "

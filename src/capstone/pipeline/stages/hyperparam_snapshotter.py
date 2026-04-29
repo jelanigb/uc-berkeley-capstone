@@ -43,11 +43,11 @@ class HyperparamSnapshotter:
 
         save_hyperparams(
             params=params,
-            version_tag=self.config.hyperparam_version,
+            version_tag=self.config.next_hyperparam_version,
             search_config=search_config,
         )
         print(
-            f"[HyperparamSnapshotter] Saved hyperparams '{self.config.hyperparam_version}' "
+            f"[HyperparamSnapshotter] Saved hyperparams '{self.config.next_hyperparam_version}' "
             f"for {list(params.keys())}."
         )
         return run
