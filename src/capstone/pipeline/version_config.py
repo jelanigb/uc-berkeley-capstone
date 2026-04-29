@@ -12,12 +12,14 @@ Also carries run-wide flags consumed by the stage classes (e.g.
 Bump rules (summary):
     Base Data
       .snapshot_raw() / .snapshot_final()         -> data minor bump (new pull, same schema)
+                                                     snapshot_raw() also triggers a baselines major bump
       .snapshot_schema_change()                   -> data major bump (columns changed)
     Model
       .snapshot_models()                          -> model minor bump (props / hyperparams changed)
       .snapshot_models_new_data()                 -> model major bump (retrained on new data)
     Baselines
-      .snapshot_baselines()                       -> baselines major bump (new pull, same schema)
+      auto-bumped (major only) by snapshot_raw() and snapshot_models_new_data()
+      baselines never do a minor bump — every change is a fresh pull
     Hyperparameters
       .snapshot_hyperparams()                     -> hyperparams minor bump (values tweaked)
       .snapshot_hyperparams_new_grid()            -> hyperparams major bump (new param added to grid)
@@ -201,7 +203,7 @@ class VersionConfig:
         print(
             f"VersionConfig loaded:\n"
             f"  data:          v{d['major']}.{d['minor']} (raw_suffix='{d['raw_suffix']}')\n"
-            f"  baselines:     v{b['major']}.{d['minor']}\n"
+            f"  baselines:     v{b['major']}.{b['minor']}\n"
             f"  model:         v{m['major']}.{m['minor']}\n"
             f"  hyperparams:   v{h['major']}.{h['minor']}\n"
             f"  use_synthetic: {use_synthetic}"
@@ -236,8 +238,10 @@ class VersionConfig:
     # =========================================================================
 
     def snapshot_raw(self, suffix: str = None) -> "VersionConfig":
-        """Mark raw BQ pull for snapshotting. Triggers a data minor bump (same schema)."""
+        """Mark raw BQ pull for snapshotting. Triggers a data minor bump (same schema)
+        and also a major bump for baselines."""
         self.flags_[Flag.RAW] = True
+        self.flags_[Flag.BASELINES_MAJOR] = True
         if suffix:
             self.state_["data"]["raw_suffix"] = suffix
         return self
@@ -272,7 +276,6 @@ class VersionConfig:
         upgrade from a data version bump in the same session."""
         self.flags_[Flag.MODELS] = True
         self.flags_[Flag.MODEL_MAJOR] = True
-        self.flags_[Flag.BASELINES_MAJOR] = True
         return self
 
     def snapshot_hyperparams(self) -> "VersionConfig":
@@ -382,13 +385,12 @@ class VersionConfig:
             write_flag=self.flags_[Flag.MODELS],
             major_flag=self.flags_[Flag.MODEL_MAJOR],
         )
-        # Baselines should be pegged to data version by default
+        # Baselines only ever do major bumps — minor is not meaningful.
+        # Triggered by snapshot_raw() (new data pull) and snapshot_models_new_data().
         self.new_baselines_ = self.compute_new_version_(
-            current=(self.state_["baselines"]["major"], 
-                self.state_["baselines"]["minor"]),
-            # Sync with any data-writing activity
-            write_flag=self.flags_[Flag.DATA_MAJOR],
-            major_flag=self.flags_[Flag.DATA_MAJOR],
+            current=(self.state_["baselines"]["major"], self.state_["baselines"]["minor"]),
+            write_flag=self.flags_[Flag.BASELINES_MAJOR],
+            major_flag=True,
         )
         self.new_hyperparams_ = self.compute_new_version_(
             current=(self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"]),
