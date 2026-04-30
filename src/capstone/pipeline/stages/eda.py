@@ -19,6 +19,10 @@ def set_fig_size(run, width: int, height: int):
     """Updates the persistent plotting configuration in the PipelineRun[cite: 2]."""
     run.eda_config["fig_size"] = (width, height)
 
+def set_palette(run, palette: str):
+    """Updates the seaborn palette used by all subsequent plots."""
+    run.eda_config["palette"] = palette
+
 def get_plt(run):
     """Returns the matplotlib.pyplot object for custom manual adjustments."""
     return plt
@@ -32,10 +36,15 @@ def _get_readable_df(run):
         raise RuntimeError("No active EDA DataFrame set. Call eda.set_df(run, 'df_name') first.")
     
     df = run.active_eda_df.copy()
-    
+
     # If working with engineered data, categorical labels are often encoded or dropped.
     # Join them back from df_clean for visualization purposes[cite: 3].
-    if "vertical" not in df.columns and run.df_clean is not None:
+    # Guard: only attempt the join when video_id is present (X_train / X_test lack it).
+    if (
+        "vertical" not in df.columns
+        and "video_id" in df.columns
+        and run.df_clean is not None
+    ):
         labels = run.df_clean[['video_id', 'vertical', 'tier']]
         df = df.merge(labels, on='video_id', how='left')
     return df
@@ -123,6 +132,33 @@ def plot_feature_correlations(run, target='above_baseline'):
     
     plt.title(f"Feature Correlation Matrix (Target: {target})")
     plt.show()
+
+def plot_target_correlations(run, target='above_baseline'):
+    """
+    Horizontal bar chart of per-feature Pearson correlations with the target.
+    The focused leakage check: positive correlations in blue, negative in red,
+    sorted by absolute magnitude. Low-variance features are filtered out first.
+    """
+    df = _get_readable_df(run).select_dtypes(include=[np.number])
+    df = df.loc[:, df.var() > 0.01]
+
+    if target not in df.columns:
+        print(f"Warning: target '{target}' not found in active DataFrame.")
+        return
+
+    correlations = df.corr()[target].drop(labels=[target]).sort_values(key=abs, ascending=True)
+
+    colors = ['#e74c3c' if v < 0 else '#2980b9' for v in correlations]
+
+    fig_w, fig_h = run.eda_config["fig_size"]
+    plt.figure(figsize=(fig_w, max(fig_h, len(correlations) * 0.35)))
+    plt.barh(correlations.index, correlations.values, color=colors)
+    plt.axvline(0, color='black', linewidth=0.8, linestyle='--')
+    plt.title(f"Feature Correlations with '{target}' (leakage check)")
+    plt.xlabel("Pearson r")
+    plt.tight_layout()
+    plt.show()
+
 
 def plot_vertical_segmentation(run, feature='view_count_24h'):
     """

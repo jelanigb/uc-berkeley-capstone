@@ -101,6 +101,13 @@ class PipelineRun:
     # Evaluation results (populated by Validator)
     results: dict = field(default_factory=dict)
 
+    # EDA state (set via eda.set_df / eda.set_fig_size / eda.set_palette)
+    active_eda_df: Optional[pd.DataFrame] = None
+    eda_config: dict = field(default_factory=lambda: {
+        "fig_size": (10, 6),
+        "palette": "viridis",
+    })
+
     def assert_ready_for(self, stage: Stage) -> None:
         """Fail fast if the fields required by `stage` are not yet populated."""
         if not isinstance(stage, Stage):
