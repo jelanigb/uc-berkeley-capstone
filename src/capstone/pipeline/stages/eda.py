@@ -69,13 +69,18 @@ def _is_valid_figure_name(name: str) -> bool:
     return ext in valid_exts
 
 
-def _save_fig(plt, figure_name: str):
+def _save_fig(plt, figure_name: str, page: Optional[int] = None):
     IMAGE_PATH_ = "images/eda/"
     IMAGE_EXT_ = ".png"
-    figure_name = f"{IMAGE_PATH_}figure_name{IMAGE_EXT_}"
-    if not _is_valid_figure_name(figure_name):
-        raise ValueError(f"Expected a valid figure name, got {figure_name!r}")
-    plt.savefig(figure_name)
+    suffix = f"_{page:02d}" if page is not None else ""
+    full_path = f"{IMAGE_PATH_}{figure_name}{suffix}{IMAGE_EXT_}"
+    if not _is_valid_figure_name(full_path):
+        raise ValueError(f"Expected a valid figure name, got {full_path!r}")
+    plt.savefig(full_path)
+
+
+_FEATURES_PER_PAGE = 10
+_SUBPLOT_HEIGHT_IN = 3.5
 
 
 # --- Plotting Functions ---
@@ -114,38 +119,38 @@ def plot_label_rates(run, save_figure_name: Optional[str] = None):
 
 def plot_engagement_distribution(run, save_figure_name: Optional[str] = None):
     """
-    Grid of plain histograms (no KDE) for all continuous features.
+    Plain histograms (no KDE) for all continuous features, one per row.
 
-    KDE is intentionally omitted here — computing kernel density over every
-    feature on a large dataset is prohibitively slow. Use
-    plot_kde_distributions() for a curated subset of priority features where
-    the smoothed curve adds analytical value.
+    Features are chunked into pages of up to _FEATURES_PER_PAGE so each page
+    is a manageable figure rather than one giant grid. Each page is shown and,
+    if save_figure_name is provided, saved as root_01.png, root_02.png, etc.
+
+    KDE is intentionally omitted — see plot_kde_distributions() for smoothed
+    density curves on the priority features.
     """
     df = _get_readable_df(run)
-    cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cols = [
-        c
-        for c in cols
+        c for c in df.select_dtypes(include=[np.number]).columns
         if c not in ["video_id", "above_baseline", "is_short", "is_long"]
     ]
 
-    num_cols = 3
-    num_rows = (len(cols) + num_cols - 1) // num_cols
-
-    plt.figure(figsize=(run.eda_config["fig_size"][0], 4 * num_rows))
+    fig_w = run.eda_config["fig_size"][0]
+    pages = [cols[i:i + _FEATURES_PER_PAGE] for i in range(0, len(cols), _FEATURES_PER_PAGE)]
     sns.set_theme(style="ticks")
 
-    for i, col in enumerate(cols):
-        plt.subplot(num_rows, num_cols, i + 1)
-        sns.histplot(df[col], kde=False, bins=40, color="teal")
-        plt.title(f"Dist: {col}")
-        plt.xlabel("")
-        plt.ylabel("Frequency")
-
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    for page_idx, page_cols in enumerate(pages, start=1):
+        fig, axes = plt.subplots(len(page_cols), 1, figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN))
+        if len(page_cols) == 1:
+            axes = [axes]
+        for ax, col in zip(axes, page_cols):
+            sns.histplot(df[col], kde=False, bins=40, color="teal", ax=ax)
+            ax.set_title(f"Dist: {col}")
+            ax.set_xlabel("")
+            ax.set_ylabel("Frequency")
+        plt.tight_layout()
+        if save_figure_name is not None:
+            _save_fig(plt, save_figure_name, page=page_idx)
+        plt.show()
 
 
 # Priority features for KDE: the core engagement signals whose smoothed density
@@ -165,12 +170,12 @@ def plot_kde_distributions(
     save_figure_name: Optional[str] = None,
 ):
     """
-    Histograms with pre-computed scipy KDE curves for a curated set of features.
+    Histograms with pre-computed scipy KDE curves, one feature per row.
 
-    KDE is computed once on a 200-point grid via scipy.stats.gaussian_kde — this
-    is fast regardless of dataset size because it evaluates the density function
-    at 200 fixed points rather than at every data point. Pass `features` to
-    override the default priority list.
+    Features are chunked into pages of up to _FEATURES_PER_PAGE, each saved
+    as root_01.png, root_02.png, etc. KDE is computed once on a 200-point grid
+    via scipy.stats.gaussian_kde — fast regardless of dataset size. Pass
+    `features` to override the default priority list.
     """
     df = _get_readable_df(run)
 
@@ -181,32 +186,27 @@ def plot_kde_distributions(
         print("No matching features found in active DataFrame.")
         return
 
-    num_cols = min(3, len(cols))
-    num_rows = (len(cols) + num_cols - 1) // num_cols
-
-    plt.figure(figsize=(run.eda_config["fig_size"][0], 4 * num_rows))
+    fig_w = run.eda_config["fig_size"][0]
+    pages = [cols[i:i + _FEATURES_PER_PAGE] for i in range(0, len(cols), _FEATURES_PER_PAGE)]
     sns.set_theme(style="ticks")
 
-    for i, col in enumerate(cols):
-        ax = plt.subplot(num_rows, num_cols, i + 1)
-        data = df[col].dropna().values
-
-        # Plain histogram normalised to density so it aligns with the KDE y-axis.
-        ax.hist(data, bins=40, density=True, alpha=0.55, color="teal")
-
-        # Pre-computed KDE: one gaussian_kde call + evaluate at 200 points.
-        kde_fn = gaussian_kde(data)
-        x_range = np.linspace(data.min(), data.max(), 200)
-        ax.plot(x_range, kde_fn(x_range), color="#e55c00", linewidth=1.8)
-
-        ax.set_title(f"KDE: {col}")
-        ax.set_xlabel("")
-        ax.set_ylabel("Density")
-
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    for page_idx, page_cols in enumerate(pages, start=1):
+        fig, axes = plt.subplots(len(page_cols), 1, figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN))
+        if len(page_cols) == 1:
+            axes = [axes]
+        for ax, col in zip(axes, page_cols):
+            data = df[col].dropna().values
+            ax.hist(data, bins=40, density=True, alpha=0.55, color="teal")
+            kde_fn = gaussian_kde(data)
+            x_range = np.linspace(data.min(), data.max(), 200)
+            ax.plot(x_range, kde_fn(x_range), color="#e55c00", linewidth=1.8)
+            ax.set_title(f"KDE: {col}")
+            ax.set_xlabel("")
+            ax.set_ylabel("Density")
+        plt.tight_layout()
+        if save_figure_name is not None:
+            _save_fig(plt, save_figure_name, page=page_idx)
+        plt.show()
 
 
 def plot_feature_correlations(
@@ -215,28 +215,43 @@ def plot_feature_correlations(
     """
     Heatmap of feature correlations. Includes a target leakage check by
     highlighting relationships with the engagement label.
+
+    Figure size is auto-computed as 0.5 in per feature so every cell is
+    readable regardless of how many features are present. Numeric annotations
+    are added when the matrix is small enough (≤ 25 features) to fit them;
+    font size scales down with matrix size.
     """
     df = _get_readable_df(run).select_dtypes(include=[np.number])
-
-    # Filter out very low variance features to improve legibility
     df = df.loc[:, df.var() > 0.01]
 
     corr = df.corr()
+    n = len(corr)
 
-    plt.figure(figsize=run.eda_config["fig_size"])
+    # Give each cell ~0.5 inches; respect the configured fig_size as a minimum.
+    cell_size = 0.5
+    fig_w = max(run.eda_config["fig_size"][0], n * cell_size)
+    fig_h = max(run.eda_config["fig_size"][1], n * cell_size)
+
+    annot = n <= 25
+    annot_kws = {"size": max(6, min(9, 180 // n))} if annot else None
+
+    plt.figure(figsize=(fig_w, fig_h))
     mask = np.triu(np.ones_like(corr, dtype=bool))
 
     sns.heatmap(
         corr,
         mask=mask,
-        annot=False,
+        annot=annot,
+        annot_kws=annot_kws,
+        fmt=".2f" if annot else "",
         cmap="RdBu_r",
         center=0,
-        linewidths=0.5,
+        linewidths=0.3,
         cbar_kws={"shrink": 0.8},
     )
 
-    plt.title(f"Feature Correlation Matrix (Target: {target})")
+    plt.title(f"Feature Correlation Matrix (Target: {target})", pad=12)
+    plt.tight_layout()
     if save_figure_name is not None:
         _save_fig(plt, save_figure_name)
     plt.show()
