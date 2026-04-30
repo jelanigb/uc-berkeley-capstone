@@ -15,7 +15,7 @@ Engagement is measured as likes and comments relative to views, benchmarked agai
 
 **Data Sources**
 
-All data is collected via the public YouTube Data API v3 (free tier). I built a custom harvesting pipeline that collects video metadata and metrics in three snapshots per video: at upload time, at \~24 hours post-publish, and at 7 days post-publish. The dataset currently spans \~965 channels across three verticals (Education, Lifestyle, Tech) and three subscriber tiers (1K–100K, 100K–1M, and 1M–10M), with over 10,000 video snapshot triplets collected to date and stored in Google BigQuery. No third-party datasets are used.
+All data is collected via the public YouTube Data API v3 (free tier). I built a custom harvesting pipeline that collects video metadata and metrics in three snapshots per video: at upload time, at \~24 hours post-publish, and at 7 days post-publish. The dataset currently spans 974 channels across three verticals (Education, Lifestyle, Tech) and three subscriber tiers (1K–100K, 100K–1M, and 1M–10M), with over 19,000 video snapshot triplets collected to date and stored in Google BigQuery. No third-party datasets are used.
 
 ---
 
