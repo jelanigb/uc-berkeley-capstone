@@ -59,7 +59,7 @@ purpose-built notebooks. For example EDA was conducted in one notebook, while
 modeling and hyperparameter tuning each have their own notebooks. Data, models and train/test/validation results were snapshotted to Google Cloud Storage for reuse. This separation of concerns allowed for cleaner adjustment of parameters, kept the implementation code separate from the write-up and results, and in some cases was necessary for time and performance management. For example, an early version of hyperparameter tuning took 30+ mins each time the notebook ran.
 
 ## Capstone Project Week 20 Check-In
-For the Capstone check-in (Week 20 of the program), please review the EDA notebook linked [here](src/capstone/notebooks/eda.ipynb):
+For the Capstone check-in (Week 20 of the program), please review the EDA notebook linked [here](src/capstone/notebooks/eda.ipynb).
 
 ## Capstone Project week 24 Final:
 pending.
