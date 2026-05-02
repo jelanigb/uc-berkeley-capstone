@@ -341,3 +341,283 @@ def plot_vertical_segmentation(
     if save_figure_name is not None:
         _save_fig(plt, save_figure_name)
     plt.show()
+
+
+# =========================================================================
+# Model Comparison (across versions and model types)
+# =========================================================================
+
+
+def load_model_comparison(run) -> pd.DataFrame:
+    """Load model comparison DataFrame from GCS and attach to run.
+
+    Stores the result as run.model_comparison_df. All comparison plot
+    functions read from this attribute. Returns the DataFrame.
+    """
+    from utils.snapshot_model import compare_models
+    run.model_comparison_df = compare_models()
+    return run.model_comparison_df
+
+
+def _get_filtered_comparison(run, compare_versions, model_type):
+    if not hasattr(run, "model_comparison_df") or run.model_comparison_df is None:
+        raise RuntimeError(
+            "No comparison data loaded. Call eda.load_model_comparison(run) first."
+        )
+    from utils.snapshot_model import filter_comparison
+    return filter_comparison(run.model_comparison_df, compare_versions, model_type)
+
+
+_MODEL_DISPLAY_NAMES = {
+    "VotingClassifier": "Ensemble (VotingClassifier)",
+}
+
+
+def _prep_comparison_df(df):
+    """Add sorted categorical version_prefix column and reset index.
+
+    Input df must have version tags as its index (as returned by compare_models()).
+    Returns (df_plot, sorted_prefixes).
+    """
+    from utils.snapshot_model import version_prefix_, get_version_prefixes
+    sorted_prefixes = get_version_prefixes(df)
+    df = df.reset_index()
+    df["version_prefix"] = df["version"].map(version_prefix_)
+    df["version_prefix"] = pd.Categorical(
+        df["version_prefix"], categories=sorted_prefixes, ordered=True
+    )
+    df["model_type_label"] = df["model_type"].map(lambda x: _MODEL_DISPLAY_NAMES.get(x, x))
+    return df, sorted_prefixes
+
+
+def _add_eval_divider(ax, sorted_prefixes: list):
+    """Draw a dashed vertical line where eval methodology changes at v4.0."""
+    for i, vp in enumerate(sorted_prefixes):
+        major = int(vp.lstrip("v").split(".")[0])
+        if major >= 4 and i > 0:
+            ax.axvline(x=i - 0.5, linestyle="--", color="gray", alpha=0.55, linewidth=1.2)
+            ax.text(
+                i - 0.4, 0.98,
+                "← test set | hold-out →",
+                fontsize=7, color="gray", va="top",
+                transform=ax.get_xaxis_transform(),
+            )
+            break
+
+
+def plot_roc_auc(
+    run,
+    compare_versions="all",
+    model_type=None,
+    save_figure_name: Optional[str] = None,
+):
+    """Line chart of ROC-AUC across model snapshot versions, one line per model type."""
+    df = _get_filtered_comparison(run, compare_versions, model_type)
+    df_plot, sorted_prefixes = _prep_comparison_df(df)
+
+    fig, ax = plt.subplots(figsize=run.eda_config["fig_size"])
+    sns.lineplot(
+        data=df_plot, x="version_prefix", y="roc_auc",
+        hue="model_type_label", style="model_type_label", markers=True, dashes=False,
+        palette=run.eda_config.get("palette", "Set2"), ax=ax,
+    )
+    _add_eval_divider(ax, sorted_prefixes)
+    ax.set_title("ROC-AUC by Model Version")
+    ax.set_xlabel("Version")
+    ax.set_ylabel("ROC-AUC")
+    ax.set_ylim(bottom=max(0, df_plot["roc_auc"].min() - 0.05))
+    plt.xticks(rotation=30, ha="right")
+    ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_accuracy(
+    run,
+    compare_versions="all",
+    model_type=None,
+    save_figure_name: Optional[str] = None,
+):
+    """Line chart of accuracy across model snapshot versions, one line per model type."""
+    df = _get_filtered_comparison(run, compare_versions, model_type)
+    df_plot, sorted_prefixes = _prep_comparison_df(df)
+
+    fig, ax = plt.subplots(figsize=run.eda_config["fig_size"])
+    sns.lineplot(
+        data=df_plot, x="version_prefix", y="accuracy",
+        hue="model_type_label", style="model_type_label", markers=True, dashes=False,
+        palette=run.eda_config.get("palette", "Set2"), ax=ax,
+    )
+    _add_eval_divider(ax, sorted_prefixes)
+    ax.set_title("Accuracy by Model Version")
+    ax.set_xlabel("Version")
+    ax.set_ylabel("Accuracy")
+    ax.set_ylim(bottom=max(0, df_plot["accuracy"].min() - 0.05))
+    plt.xticks(rotation=30, ha="right")
+    ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_precision_recall(
+    run,
+    compare_versions="all",
+    model_type=None,
+    save_figure_name: Optional[str] = None,
+):
+    """2x2 grid: precision and recall for both classes across model versions."""
+    df = _get_filtered_comparison(run, compare_versions, model_type)
+    df_plot, sorted_prefixes = _prep_comparison_df(df)
+
+    palette_ = run.eda_config.get("palette", "Set2")
+    fig_w, fig_h = run.eda_config["fig_size"]
+    fig, axes = plt.subplots(2, 2, figsize=(fig_w * 1.3, fig_h * 1.3))
+    fig.suptitle("Precision & Recall by Model Version", y=1.01)
+
+    specs_ = [
+        (axes[0, 0], "precision_above", "Precision — Above Baseline", False),
+        (axes[0, 1], "recall_above",    "Recall — Above Baseline",    True),
+        (axes[1, 0], "precision_below", "Precision — Below Baseline", False),
+        (axes[1, 1], "recall_below",    "Recall — Below Baseline",    False),
+    ]
+    for ax, col, title, show_legend in specs_:
+        sns.lineplot(
+            data=df_plot, x="version_prefix", y=col,
+            hue="model_type_label", style="model_type_label", markers=True, dashes=False,
+            palette=palette_, ax=ax, legend=show_legend,
+        )
+        if show_legend:
+            ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
+        _add_eval_divider(ax, sorted_prefixes)
+        ax.set_title(title)
+        ax.set_xlabel("")
+        ax.set_ylabel(col.split("_")[0].capitalize())
+        ax.set_ylim(0, 1.05)
+        ax.tick_params(axis="x", rotation=30)
+
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_f1(
+    run,
+    compare_versions="all",
+    model_type=None,
+    save_figure_name: Optional[str] = None,
+):
+    """Side-by-side F1 for Above Baseline and Below Baseline across model versions."""
+    df = _get_filtered_comparison(run, compare_versions, model_type)
+    df_plot, sorted_prefixes = _prep_comparison_df(df)
+
+    palette_ = run.eda_config.get("palette", "Set2")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=run.eda_config["fig_size"])
+
+    for ax, col, title, show_legend in [
+        (ax1, "f1_above", "F1 — Above Baseline", False),
+        (ax2, "f1_below", "F1 — Below Baseline", True),
+    ]:
+        sns.lineplot(
+            data=df_plot, x="version_prefix", y=col,
+            hue="model_type_label", style="model_type_label", markers=True, dashes=False,
+            palette=palette_, ax=ax, legend=show_legend,
+        )
+        if show_legend:
+            ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
+        _add_eval_divider(ax, sorted_prefixes)
+        ax.set_title(title)
+        ax.set_xlabel("Version")
+        ax.set_ylabel("F1 Score")
+        ax.set_ylim(0, 1.05)
+        ax.tick_params(axis="x", rotation=30)
+
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_data_composition_vs_accuracy(
+    run,
+    compare_versions="all",
+    save_figure_name: Optional[str] = None,
+):
+    """Correlation heatmap of training data composition vs. accuracy metrics.
+
+    Columns: real_rows, synth_rows, total_rows, accuracy, roc_auc, f1_above, f1_below.
+    Treat results as directional signals — correlation is across model snapshots,
+    not independent observations.
+    """
+    df = _get_filtered_comparison(run, compare_versions, None)
+    df_corr_ = df.copy()
+    df_corr_["total_rows"] = df_corr_["real_rows"].fillna(0) + df_corr_["synth_rows"].fillna(0)
+
+    cols_ = ["real_rows", "synth_rows", "total_rows", "accuracy", "roc_auc", "f1_above", "f1_below"]
+    corr_ = df_corr_[cols_].corr()
+
+    fig_w, fig_h = run.eda_config["fig_size"]
+    plt.figure(figsize=(max(fig_w, 8), max(fig_h, 7)))
+    sns.heatmap(
+        corr_, annot=True, fmt=".2f", cmap="RdBu_r", center=0,
+        linewidths=0.4, cbar_kws={"shrink": 0.8},
+    )
+    plt.title(f"Training Data Composition vs. Accuracy Metrics (n={len(df_corr_)} snapshots)")
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_top_features_over_time(
+    run,
+    model_type,
+    compare_versions="all",
+    top_n: int = 10,
+    save_figure_name: Optional[str] = None,
+):
+    """Heatmap of top feature importances for a single model type across snapshot versions.
+
+    model_type must be a ModelType enum value. top_n features are selected by mean
+    absolute importance across versions, so coefficients (LR) and tree importances
+    are handled consistently.
+    """
+    from utils.snapshot_model import load_top_features_over_time, get_version_prefixes
+
+    df_features_ = load_top_features_over_time(model_type, compare_versions)
+    if df_features_.empty:
+        return
+
+    top_feats_ = (
+        df_features_.groupby("feature")["importance"]
+        .apply(lambda x: x.abs().mean())
+        .nlargest(top_n)
+        .index
+    )
+    df_top_ = df_features_[df_features_["feature"].isin(top_feats_)]
+
+    pivot_ = df_top_.pivot_table(
+        index="feature", columns="version_prefix", values="importance", aggfunc="mean"
+    )
+    all_prefixes_ = get_version_prefixes(run.model_comparison_df)
+    sorted_cols_ = [c for c in all_prefixes_ if c in pivot_.columns]
+    pivot_ = pivot_[sorted_cols_]
+
+    fig_w, fig_h = run.eda_config["fig_size"]
+    plt.figure(figsize=(max(fig_w, len(sorted_cols_) * 1.4), max(fig_h, top_n * 0.55)))
+    sns.heatmap(
+        pivot_, annot=True, fmt=".4f", cmap="RdBu_r", center=0,
+        linewidths=0.3, cbar_kws={"shrink": 0.7},
+    )
+    display_name_ = _MODEL_DISPLAY_NAMES.get(model_type.value, model_type.value)
+    plt.title(f"Top {top_n} Features Over Time — {display_name_}")
+    plt.xlabel("Version")
+    plt.ylabel("Feature")
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()

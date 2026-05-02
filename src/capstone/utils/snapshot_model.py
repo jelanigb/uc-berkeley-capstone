@@ -26,6 +26,7 @@ Usage:
 """
 
 import os
+import re
 import json
 import joblib
 import numpy as np
@@ -33,6 +34,7 @@ import pandas as pd
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any
+from enum import Enum
 
 from google.cloud import storage
 from sklearn.metrics import (
@@ -42,6 +44,18 @@ from sklearn.metrics import (
 )
 
 from constants import PROJECT_ID, BUCKET_NAME
+
+
+# =========================================================================
+# Model type enum
+# =========================================================================
+
+class ModelType(str, Enum):
+    """Canonical model type keys used across snapshot and EDA utilities."""
+    XGB = "XGBoost"
+    LR = "LogisticRegression"
+    RF = "RandomForest"
+    ENSEMBLE_VC = "VotingClassifier"
 
 
 # =========================================================================
@@ -327,6 +341,104 @@ def save_model(
     return metadata
 
 
+# =========================================================================
+# Version filtering utilities
+# =========================================================================
+
+def version_prefix_(version_tag: str) -> str:
+    """Extract vX.Y prefix from a version tag like 'v3.1_mixed_80real' or 'v5.0_xgb'."""
+    m = re.match(r'(v\d+\.\d+)', str(version_tag))
+    return m.group(1) if m else str(version_tag)
+
+
+def sort_key_prefix_(prefix: str) -> tuple:
+    parts = prefix.lstrip('v').split('.')
+    return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+
+
+def get_version_prefixes(df: pd.DataFrame) -> list:
+    """Return chronologically sorted unique version prefixes from a comparison DataFrame."""
+    prefixes = set(df.index.map(version_prefix_))
+    return sorted(prefixes, key=sort_key_prefix_)
+
+
+def filter_comparison(
+    df: pd.DataFrame,
+    compare_versions="all",
+    model_type=None,
+) -> pd.DataFrame:
+    """Filter a model comparison DataFrame by version prefix(es) and/or model type.
+
+    compare_versions:
+        "all"            – no version filtering
+        "last2versions"  – two most recent distinct version prefixes
+        "last3versions"  – three most recent distinct version prefixes
+        list[str]        – keep rows whose version tag contains any listed substring
+    model_type:
+        None             – all model types
+        ModelType        – single model type
+        list[ModelType]  – multiple model types
+    """
+    if model_type is not None:
+        types_ = [model_type] if isinstance(model_type, ModelType) else list(model_type)
+        type_vals_ = [mt.value for mt in types_]
+        df = df[df["model_type"].isin(type_vals_)]
+
+    if compare_versions == "all":
+        return df
+    if compare_versions in ("last2versions", "last3versions"):
+        n_ = 2 if compare_versions == "last2versions" else 3
+        selected_ = get_version_prefixes(df)[-n_:]
+        return df[df.index.map(version_prefix_).isin(selected_)]
+
+    mask_ = pd.Series(False, index=df.index)
+    for substr_ in compare_versions:
+        mask_ |= df.index.str.contains(str(substr_), regex=False)
+    return df[mask_]
+
+
+def load_top_features_over_time(
+    model_type: ModelType,
+    compare_versions="all",
+) -> pd.DataFrame:
+    """Load top feature importances for a single model type across snapshot versions.
+
+    Returns a tidy DataFrame with columns [version, version_prefix, feature, importance].
+    importance is coefficient (LR) or impurity importance (tree models).
+    Suitable for pivot_table → heatmap.
+    """
+    df_meta_ = compare_models()
+    df_filtered_ = filter_comparison(df_meta_, compare_versions, model_type)
+
+    if df_filtered_.empty:
+        print(f"No snapshots found for {model_type.value} with compare_versions={compare_versions!r}")
+        return pd.DataFrame()
+
+    gcs_client_ = storage.Client(project=PROJECT_ID)
+    bucket_ = gcs_client_.bucket(BUCKET_NAME)
+
+    rows_ = []
+    for version_tag_ in df_filtered_.index:
+        blob_ = bucket_.blob(f"models/{version_tag_}/metadata.json")
+        if not blob_.exists():
+            continue
+        meta_ = json.loads(blob_.download_as_text())
+        for feat_ in meta_.get("result", {}).get("top_features", []):
+            imp_ = feat_.get("importance") or feat_.get("coefficient") or 0.0
+            rows_.append({
+                "version": version_tag_,
+                "version_prefix": version_prefix_(version_tag_),
+                "feature": feat_["feature"],
+                "importance": float(imp_),
+            })
+
+    if not rows_:
+        print(f"No top_features data found for {model_type.value}.")
+        return pd.DataFrame()
+
+    return pd.DataFrame(rows_)
+
+
 def load_model(version_tag: str):
     """
     Load model artifacts from GCS.
@@ -524,3 +636,24 @@ def compare_models() -> pd.DataFrame:
     df = pd.DataFrame(rows).set_index('version')
     print(f"Loaded {len(df)} model snapshots")
     return df
+
+
+def save_comparison_to_gcs(df: pd.DataFrame = None) -> str:
+    """Save model comparison DataFrame to gs://{BUCKET_NAME}/evals/model_comparison.jsonl.
+
+    Not versioned — overwrites on each call. Pass df=None to load fresh via compare_models().
+    """
+    if df is None:
+        df = compare_models()
+
+    gcs_client_ = storage.Client(project=PROJECT_ID)
+    bucket_ = gcs_client_.bucket(BUCKET_NAME)
+    blob_ = bucket_.blob("evals/model_comparison.jsonl")
+
+    records_ = df.reset_index().to_dict(orient="records")
+    jsonl_ = "\n".join(json.dumps(r) for r in records_) + "\n"
+    blob_.upload_from_string(jsonl_, content_type="application/json")
+
+    gcs_path_ = f"gs://{BUCKET_NAME}/evals/model_comparison.jsonl"
+    print(f"Comparison snapshot saved → {gcs_path_} ({len(records_)} rows)")
+    return gcs_path_
