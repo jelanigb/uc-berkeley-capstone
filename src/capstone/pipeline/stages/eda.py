@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import gaussian_kde
+from sklearn.metrics import roc_curve, auc
 
 # --- Configuration & State Management ---
 
@@ -70,10 +71,11 @@ def _is_valid_figure_name(name: str) -> bool:
 
 
 def _save_fig(plt, figure_name: str, page: Optional[int] = None):
-    IMAGE_PATH_ = "images/eda/"
-    IMAGE_EXT_ = ".png"
-    suffix = f"_{page:02d}" if page is not None else ""
-    full_path = f"{IMAGE_PATH_}{figure_name}{suffix}{IMAGE_EXT_}"
+    if page is not None:
+        base, ext = os.path.splitext(figure_name)
+        full_path = f"{base}_{page:02d}{ext}"
+    else:
+        full_path = figure_name
     if not _is_valid_figure_name(full_path):
         raise ValueError(f"Expected a valid figure name, got {full_path!r}")
     plt.savefig(full_path)
@@ -434,6 +436,72 @@ def plot_roc_auc(
     plt.show()
 
 
+def plot_roc_curves(
+    run,
+    save_figure_name: Optional[str] = None,
+):
+    """
+    Plots actual ROC curves (TPR vs. FPR) for every model in run.models,
+    evaluated against the locked validation set (run.X_val_unscaled + run.y_val).
+
+    Each model's stored scaler is applied before prediction so results match
+    the validated metrics. The AUC is annotated in the legend for each curve.
+    A dashed diagonal reference line (random classifier) is included.
+
+    Requires: run.models, run.X_val_unscaled, run.y_val all populated.
+    """
+    if not getattr(run, "models", None):
+        print("No models found in run.models. Train or load models first.")
+        return
+    if getattr(run, "X_val_unscaled", None) is None or getattr(run, "y_val", None) is None:
+        print("Validation set not found. Run DataSplitter + Scaler first.")
+        return
+
+    palette_ = sns.color_palette("Set2", len(run.models))
+    fig, ax = plt.subplots(figsize=run.eda_config["fig_size"])
+
+    for idx, (model_name, entry) in enumerate(run.models.items()):
+        model = entry["model"]
+        scaler = entry.get("scaler")
+        feature_cols = entry.get("feature_cols", run.X_val_unscaled.columns.tolist())
+
+        X_val = run.X_val_unscaled[feature_cols]
+        if scaler is not None:
+            X_val = scaler.transform(X_val)
+
+        y_score = (
+            model.predict_proba(X_val)[:, 1]
+            if hasattr(model, "predict_proba")
+            else model.decision_function(X_val)
+        )
+
+        fpr, tpr, _ = roc_curve(run.y_val, y_score)
+        roc_auc = auc(fpr, tpr)
+
+        ax.plot(
+            fpr, tpr,
+            color=palette_[idx],
+            linewidth=2,
+            label=f"{model_name} (AUC = {roc_auc:.3f})",
+        )
+
+    # Random classifier baseline
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1.0, label="Random (AUC = 0.500)")
+
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC Curves — v5.1 Models (Locked Validation Set)")
+    ax.legend(loc="lower right")
+    sns.despine()
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+
 def plot_accuracy(
     run,
     compare_versions="all",
@@ -617,6 +685,159 @@ def plot_top_features_over_time(
     plt.title(f"Top {top_n} Features Over Time — {display_name_}")
     plt.xlabel("Version")
     plt.ylabel("Feature")
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_feature_importance(
+    run,
+    model_name: str = "xgb",
+    top_n: int = 20,
+    save_figure_name: Optional[str] = None,
+):
+    """
+    Horizontal bar chart of the top N feature importances (or coefficients)
+    for a single model in run.models. Positive importances in blue, negative
+    coefficients (LR) in red.
+
+    Args:
+        model_name: Key in run.models (e.g. 'xgb', 'rf', 'lr_l1', 'ensemble').
+        top_n:      Number of features to show, ranked by absolute value.
+    """
+    if model_name not in run.models:
+        print(f"Model '{model_name}' not found in run.models. "
+              f"Available: {list(run.models.keys())}")
+        return
+
+    entry = run.models[model_name]
+    model = entry["model"]
+    feature_cols = entry.get("feature_cols", [])
+
+    # Extract importances / coefficients depending on model type
+    if hasattr(model, "feature_importances_"):
+        importances = model.feature_importances_
+        xlabel = "Feature Importance (impurity reduction)"
+        is_signed = False
+    elif hasattr(model, "coef_"):
+        importances = model.coef_[0]
+        xlabel = "Coefficient"
+        is_signed = True
+    else:
+        # VotingClassifier — aggregate from sub-estimators if possible
+        importances_list = []
+        for _, estimator in model.estimators:
+            if hasattr(estimator, "feature_importances_"):
+                importances_list.append(estimator.feature_importances_)
+        if not importances_list:
+            print(f"Model '{model_name}' does not expose feature importances.")
+            return
+        importances = np.mean(importances_list, axis=0)
+        xlabel = "Mean Feature Importance (sub-estimators)"
+        is_signed = False
+
+    if len(feature_cols) != len(importances):
+        print(f"Feature column count mismatch: {len(feature_cols)} cols vs "
+              f"{len(importances)} importances.")
+        return
+
+    df_imp = (
+        pd.DataFrame({"feature": feature_cols, "importance": importances})
+        .reindex(pd.Series(importances).abs().nlargest(top_n).index)
+        .sort_values("importance", ascending=True)
+    )
+
+    colors = (
+        ["#e74c3c" if v < 0 else "#2980b9" for v in df_imp["importance"]]
+        if is_signed
+        else ["#2980b9"] * len(df_imp)
+    )
+
+    fig_w, fig_h = run.eda_config["fig_size"]
+    plt.figure(figsize=(fig_w, max(fig_h, top_n * 0.4)))
+    plt.barh(df_imp["feature"], df_imp["importance"], color=colors)
+    if is_signed:
+        plt.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    plt.xlabel(xlabel)
+    plt.title(f"Top {top_n} Feature Importances — {model_name}")
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+def plot_is_short_engagement(
+    run,
+    feature: str = "like_rate_24h",
+    save_figure_name: Optional[str] = None,
+):
+    """
+    Compares the distribution of an engagement metric between YouTube Shorts
+    (is_short=1) and standard videos (is_short=0), split by vertical.
+
+    Left subplot: violin plot of `feature` by content type (Short vs. Standard),
+    coloured by vertical.
+    Right subplot: median `feature` per vertical × content type as a grouped
+    bar chart, with error bars showing 95% CI via bootstrapping.
+
+    Args:
+        feature: Engagement metric to compare. Defaults to 'like_rate_24h'.
+                 Other useful options: 'view_velocity_ratio', 'like_rate_upload'.
+    """
+    df = _get_readable_df(run)
+
+    required = [feature, "is_short", "vertical"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        print(f"Missing columns: {missing}. Set a post-engineering DataFrame first.")
+        return
+
+    df_plot = df[required].copy()
+    df_plot["Content Type"] = df_plot["is_short"].map({1: "Short (≤60s)", 0: "Standard"})
+
+    palette_ = run.eda_config.get("palette", "Set2")
+    fig_w, fig_h = run.eda_config["fig_size"]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(fig_w * 1.3, fig_h))
+
+    # Left: violin by content type, hue by vertical
+    sns.violinplot(
+        data=df_plot,
+        x="Content Type",
+        y=feature,
+        hue="vertical",
+        split=False,
+        inner="quartile",
+        palette=palette_,
+        ax=ax1,
+        cut=0,
+    )
+    ax1.set_title(f"{feature} distribution:\nShorts vs. Standard by Vertical")
+    ax1.set_xlabel("")
+    ax1.set_ylabel(feature)
+    ax1.legend(title="Vertical", bbox_to_anchor=(1.01, 1), loc="upper left")
+
+    # Right: median with 95% CI grouped bar
+    sns.barplot(
+        data=df_plot,
+        x="vertical",
+        y=feature,
+        hue="Content Type",
+        palette=["#e55c00", "#2980b9"],
+        estimator=np.median,
+        errorbar=("ci", 95),
+        ax=ax2,
+    )
+    ax2.set_title(f"Median {feature} by Vertical × Content Type")
+    ax2.set_xlabel("Vertical")
+    ax2.set_ylabel(f"Median {feature}")
+    ax2.legend(title="Content Type")
+
+    fig.suptitle(
+        f"Engagement Rate Comparison: YouTube Shorts vs. Standard Videos",
+        y=1.02,
+    )
+    sns.despine()
     plt.tight_layout()
     if save_figure_name is not None:
         _save_fig(plt, save_figure_name)
