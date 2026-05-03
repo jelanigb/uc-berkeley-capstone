@@ -159,7 +159,9 @@ By v4.0, the top four XGBoost features were: (1) `tier_encoded` — a channel's 
 
 *`is_short` interaction features.* `is_short` has been a top-5 feature since v2.0 and currently ranks \#4 in XGBoost v4.0. YouTube Shorts exhibit fundamentally different viewer behavior — they are typically watched multiple times in a feed without likes, distributed through a separate recommendation system, and benefit from different algorithmic visibility mechanics than standard videos. A model applying the same engagement rate interpretation to a Short and a 20-minute video is making an implicit categorical error. Candidate interactions include `is_short × like_rate_24h` (engagement rate means something different for Shorts), `is_short × view_velocity_ratio` (momentum growth patterns differ by format), and a `like_rate_short` feature (like\_rate\_24h where is\_short=1, else 0\) to allow the model to learn separate engagement thresholds per content type.
 
-![Side-by-side distribution of `like_rate_24h` for Shorts vs. non-Shorts (violin or box plot, split further by vertical).](./images/results/shorts_engagement.png)
+![Side-by-side distribution of `like_rate_24h` for Shorts vs. non-Shorts (violin or box plot, split further by vertical).](./images/results/shorts_engagement_violin.png)
+
+![Bar plot distribution of shorts engagement).](./images/results/shorts_engagement_bar.png)
 
 *Within-vertical duration percentile.* The current `is_short` and `is_long` flags use global thresholds (under 60 seconds; over 20 minutes), but "long" means something different depending on vertical. A 15-minute video is standard for Education channels but above-average for Lifestyle. Computing a `duration_percentile_within_vertical` — where does this video fall in the duration distribution for its own vertical — would capture relative positioning rather than absolute length, making the feature more semantically meaningful across verticals.
 
