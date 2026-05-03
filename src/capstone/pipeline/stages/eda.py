@@ -798,26 +798,41 @@ def plot_is_short_engagement(
 
     palette_ = run.eda_config.get("palette", "Set2")
     fig_w, fig_h = run.eda_config["fig_size"]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(fig_w * 1.3, fig_h))
 
-    # Left: violin by content type, hue by vertical
-    sns.violinplot(
-        data=df_plot,
-        x="Content Type",
-        y=feature,
-        hue="vertical",
-        split=False,
-        inner="quartile",
-        palette=palette_,
-        ax=ax1,
-        cut=0,
+    # Figure 1: side-by-side violins — Standard (left) and Short (right)
+    fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(fig_w * 1.3, fig_h), sharey=False)
+    for ax, label, title_suffix in [
+        (ax1, "Standard",    "Standard Videos"),
+        (ax2, "Short (≤60s)", "YouTube Shorts (≤60s)"),
+    ]:
+        subset_ = df_plot[df_plot["Content Type"] == label]
+        sns.violinplot(
+            data=subset_,
+            x="vertical",
+            y=feature,
+            palette=palette_,
+            inner="quartile",
+            ax=ax,
+            cut=0,
+        )
+        ax.set_title(f"{feature}\n{title_suffix}")
+        ax.set_xlabel("Vertical")
+        ax.set_ylabel(feature)
+        ax.tick_params(axis="x", rotation=30)
+
+    fig1.suptitle(
+        f"Engagement Rate Distribution: YouTube Shorts vs. Standard Videos",
+        y=1.02,
     )
-    ax1.set_title(f"{feature} distribution:\nShorts vs. Standard by Vertical")
-    ax1.set_xlabel("")
-    ax1.set_ylabel(feature)
-    ax1.legend(title="Vertical", bbox_to_anchor=(1.01, 1), loc="upper left")
+    sns.despine()
+    plt.tight_layout()
+    if save_figure_name is not None:
+        base_, ext_ = os.path.splitext(save_figure_name)
+        _save_fig(plt, f"{base_}_violin{ext_}")
+    plt.show()
 
-    # Right: median with 95% CI grouped bar
+    # Figure 2: median with 95% CI grouped bar chart
+    fig2, ax3 = plt.subplots(figsize=(fig_w, fig_h))
     sns.barplot(
         data=df_plot,
         x="vertical",
@@ -826,19 +841,15 @@ def plot_is_short_engagement(
         palette=["#e55c00", "#2980b9"],
         estimator=np.median,
         errorbar=("ci", 95),
-        ax=ax2,
+        ax=ax3,
     )
-    ax2.set_title(f"Median {feature} by Vertical × Content Type")
-    ax2.set_xlabel("Vertical")
-    ax2.set_ylabel(f"Median {feature}")
-    ax2.legend(title="Content Type")
-
-    fig.suptitle(
-        f"Engagement Rate Comparison: YouTube Shorts vs. Standard Videos",
-        y=1.02,
-    )
+    ax3.set_title(f"Median {feature} by Vertical × Content Type")
+    ax3.set_xlabel("Vertical")
+    ax3.set_ylabel(f"Median {feature}")
+    ax3.legend(title="Content Type")
     sns.despine()
     plt.tight_layout()
     if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
+        base_, ext_ = os.path.splitext(save_figure_name)
+        _save_fig(plt, f"{base_}_bar{ext_}")
     plt.show()
