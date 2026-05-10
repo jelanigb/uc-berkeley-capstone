@@ -810,10 +810,12 @@ def plot_is_short_engagement(
             data=subset_,
             x="vertical",
             y=feature,
+            hue="vertical",
             palette=palette_,
             inner="quartile",
             ax=ax,
             cut=0,
+            legend=False,
         )
         ax.set_title(f"{feature}\n{title_suffix}")
         ax.set_xlabel("Vertical")
