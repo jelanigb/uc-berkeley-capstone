@@ -46,7 +46,7 @@ import pandas as pd
 from google.cloud import storage
 from sklearn.model_selection import train_test_split
 
-from constants import BUCKET_NAME
+from constants import BUCKET_NAME, MODELING_VERTICALS
 from pipeline.pipeline_run import PipelineRun, Stage
 from pipeline.version_config import VersionConfig
 from pipeline.stages.feature_engineer import TARGET_COL_, derive_feature_cols
@@ -213,6 +213,27 @@ def _prompt_confirm() -> bool:
     return input("Proceed with write? Type 'yes' to confirm: ").strip().lower() == "yes"
 
 
+# ── generalization helpers ────────────────────────────────────────────────────
+
+def _gen_composition(df_gen: pd.DataFrame) -> dict:
+    """Return row counts per vertical/tier cell as {"Music_S": N, ...}."""
+    if df_gen.empty:
+        return {}
+    return {
+        f"{v}_{t}": int(n)
+        for (v, t), n in df_gen.groupby(["vertical", "tier"]).size().items()
+    }
+
+
+def _print_gen_summary(df_gen: pd.DataFrame, composition: dict) -> None:
+    if df_gen.empty:
+        print("DataSplitter — no generalization-vertical rows (Music/Sports) found.")
+        return
+    print(f"DataSplitter — gen split: {len(df_gen):,} rows (Music/Sports, grows over time)")
+    for cell, count in sorted(composition.items()):
+        print(f"  {cell}: {count:,}")
+
+
 # ── stage ─────────────────────────────────────────────────────────────────────
 
 class DataSplitter:
@@ -241,7 +262,10 @@ class DataSplitter:
                 "create and lock the holdout before running any pipeline scenario."
             )
 
-        df = run.df_engineered.copy()
+        df_all = run.df_engineered
+        df = df_all[df_all["vertical"].isin(MODELING_VERTICALS)].copy()
+        df_gen = df_all[~df_all["vertical"].isin(MODELING_VERTICALS)].copy()
+
         feature_cols = derive_feature_cols(df)
 
         df_train, df_test, df_val = self._load_and_split(df)
@@ -256,6 +280,12 @@ class DataSplitter:
         run.y_test = df_test[TARGET_COL_].copy()
         run.X_val = df_val[feature_cols].copy()
         run.y_val = df_val[TARGET_COL_].copy()
+
+        run.df_gen = df_gen
+        run.X_gen = df_gen[feature_cols].copy()
+        run.y_gen = df_gen[TARGET_COL_].copy()
+        run.gen_composition = _gen_composition(df_gen)
+        _print_gen_summary(df_gen, run.gen_composition)
 
         return run
 

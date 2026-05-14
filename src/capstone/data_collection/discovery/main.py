@@ -22,7 +22,7 @@ Deploy:
   gcloud functions deploy channel-discovery \
     --gen2 --runtime python312 --region us-central1 \
     --source . --entry-point run_discovery --trigger-http \
-    --allow-unauthenticated --memory 512Mi --timeout 240s \
+    --memory 512Mi --timeout 240s \
     --set-secrets "YOUTUBE_API_KEY=YOUTUBE_API_KEY:latest" \
     --set-env-vars "PROJECT_ID=maduros-dolce"
 """
@@ -47,6 +47,11 @@ TABLE_ID = f"{PROJECT_ID}.{DATASET}.channels_to_track"
 CANDIDATES_TABLE = f"{PROJECT_ID}.{DATASET}.channel_candidates"
 
 TARGETS = {"S": 150, "M": 100, "L": 75}
+
+# Music and Sports are generalization-only verticals — never enter train/test/val.
+# Smaller targets because they're collected for breadth, not model training.
+GEN_VERTICALS = {"Music", "Sports"}
+GEN_TARGETS = {"S": 75, "M": 75, "L": 50}
 
 # It is difficult to find large channels which upload 1x / week. 
 # 2x week should be sufficient.
@@ -80,6 +85,50 @@ FILL_QUERIES = {
         "world history", "financial literacy", "space documentary 2026",
         "biology explained", "debate analysis", "engineering explained",
         "philosophy lecture", "language learning tips",
+    ],
+    "Music": [
+        "official music video 4k",
+        "live studio session performance",
+        "independent artist new release",
+        "music production walkthrough",
+        "album review and track ranking",
+        "music festival vlog 2024",
+        "acoustic cover songs",
+        "lofi hip hop beats for study",
+        "behind the scenes music video shoot",
+        "instrumental guitar solo performance",
+        "vocal technique and warmups",
+        "underground rap scene documentary",
+        "orchestral performance full concert",
+        "electronic music live set dj",
+        "songwriting process and lyrics breakdown",
+        "music equipment and synth review",
+        "jazz trio improvisation",
+        "kpop comeback analysis",
+        "classical piano masterclass",
+        "best new indie bands this month"
+    ],
+    "Sports": [
+        "nba match highlights tonight",
+        "premier league football analysis",
+        "athlete speed and agility drills",
+        "sports podcast debate live",
+        "formula 1 race weekend summary",
+        "skateboarding trick progression",
+        "extreme sports go pro highlights",
+        "bodybuilding contest prep vlog",
+        "college football scouting report",
+        "golf swing tips and course vlog",
+        "ufc fight night reaction",
+        "marathon training diary for beginners",
+        "high school basketball top plays",
+        "sports equipment unboxing and review",
+        "olympic weightlifting technique",
+        "tennis match point highlights",
+        "cricket world cup news",
+        "mountain bike downhill POV",
+        "sports science and injury recovery",
+        "historical sports moments documentary"
     ],
 }
 
@@ -330,7 +379,7 @@ def fill_gaps(max_per_combo=0):
 
     for tier in ["S", "M", "L"]:
         for vertical in FILL_QUERIES:
-            target = TARGETS[tier]
+            target = GEN_TARGETS[tier] if vertical in GEN_VERTICALS else TARGETS[tier]
             current = counts.get((vertical, tier), 0)
             needed = max(0, target - current)
 

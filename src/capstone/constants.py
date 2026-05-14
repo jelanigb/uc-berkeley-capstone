@@ -24,3 +24,9 @@ For secrets, use environment variables or a gitignored `.env` file loaded via
 
 PROJECT_ID = "maduros-dolce"
 BUCKET_NAME = "maduros-dolce-capstone-data"
+
+# Verticals used for model training, test, and validation.
+# Music and Sports are collected for generalization evaluation only and are
+# excluded from all modeling splits by DataSplitter.
+MODELING_VERTICALS = frozenset(["Tech", "Lifestyle", "Education"])
+GEN_VERTICALS = frozenset(["Music", "Sports"])

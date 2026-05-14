@@ -51,9 +51,9 @@ REQUIRED_FIELDS_ = {
 SUMMARY_FIELDS_ = [
     "df_videos", "df_baselines", "df_medians",
     "df_clean", "df_engineered",
-    "df_train", "df_test", "df_val",
-    "X_train", "X_test", "X_val", "X_val_unscaled",
-    "y_train", "y_test", "y_val",
+    "df_train", "df_test", "df_val", "df_gen",
+    "X_train", "X_test", "X_val", "X_val_unscaled", "X_gen",
+    "y_train", "y_test", "y_val", "y_gen",
     "models", "results",
 ]
 
@@ -80,6 +80,11 @@ class PipelineRun:
     df_test: Optional[pd.DataFrame] = None    # real data only, always
     df_val: Optional[pd.DataFrame] = None     # real data only, locked forever
 
+    # Generalization rows (populated by DataSplitter — Music/Sports, grows over time)
+    # Not locked — all gen rows present at run time. Never touches train/test/val.
+    df_gen: Optional[pd.DataFrame] = None
+    gen_composition: dict = field(default_factory=dict)  # {"Music_S": N, ...}
+
     # Feature matrices (X unscaled, produced by DataSplitter; scaled in-place by Scaler)
     X_train: Optional[pd.DataFrame] = None
     X_test: Optional[pd.DataFrame] = None
@@ -88,9 +93,11 @@ class PipelineRun:
     # Validator uses this so each loaded model can apply its own saved scaler,
     # which differs from the current Scaler's fit when loading historical models.
     X_val_unscaled: Optional[pd.DataFrame] = None
+    X_gen: Optional[pd.DataFrame] = None
     y_train: Optional[pd.Series] = None
     y_test: Optional[pd.Series] = None
     y_val: Optional[pd.Series] = None
+    y_gen: Optional[pd.Series] = None
 
     # Synthetic row count (set by SyntheticAugmenter; read by ModelTrainer)
     num_synth_rows: int = 0
