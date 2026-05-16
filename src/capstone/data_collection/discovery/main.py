@@ -53,9 +53,18 @@ TARGETS = {"S": 150, "M": 100, "L": 75}
 GEN_VERTICALS = {"Music", "Sports"}
 GEN_TARGETS = {"S": 75, "M": 75, "L": 50}
 
-# It is difficult to find large channels which upload 1x / week. 
-# 2x week should be sufficient.
-MIN_VIDEOS_PER_WEEK = {"S": 1.0, "M": 1.0, "L": 0.5}
+# Minimum upload velocity (videos/week) required per vertical+tier combo.
+# Core verticals (Tech, Lifestyle, Education) use stricter thresholds because
+# they feed model training. GEN_VERTICALS (Music, Sports) are relaxed,
+# especially at L-tier where large channels post less frequently.
+VELOCITY_THRESHOLDS = {
+    "Tech": {"S": 1.0, "M": 1.0, "L": 0.5},
+    "Lifestyle": {"S": 1.0, "M": 1.0, "L": 0.5},
+    "Education": {"S": 1.0, "M": 1.0, "L": 0.5},
+    "Music": {"S": 1.0, "M": 0.75, "L": 0.25},
+    "Sports": {"S": 1.0, "M": 0.75, "L": 0.25},
+    "DEFAULT": {"S": 1.0, "M": 1.0, "L": 0.5},  # safe fallback for future verticals
+}
 WEEKS_TO_CHECK = 4
 
 FILL_QUERIES = {
@@ -214,7 +223,7 @@ def log_quota_usage():
 
 # --- Helpers ---
 
-def check_upload_velocity(youtube, channel_id, tier):
+def check_upload_velocity(youtube, channel_id, min_velocity):
     """Returns (passes_filter: bool, velocity: float videos/week)."""
     playlist_id = "UU" + channel_id[2:]
     try:
@@ -240,7 +249,7 @@ def check_upload_velocity(youtube, channel_id, tier):
         ) >= cutoff
     )
     vel = recent / WEEKS_TO_CHECK
-    return vel >= MIN_VIDEOS_PER_WEEK[tier], round(vel, 2)
+    return vel >= min_velocity, round(vel, 2)
 
 
 def get_current_counts(bq_client):
@@ -467,10 +476,12 @@ def fill_gaps(max_per_combo=0):
                 if not (lo <= subs < hi):
                     continue
 
-                passes, vel = check_upload_velocity(youtube, cid, tier)
+                vertical_profile = VELOCITY_THRESHOLDS.get(vertical, VELOCITY_THRESHOLDS["DEFAULT"])
+                min_velocity = vertical_profile.get(tier, 1.0)
+                passes, vel = check_upload_velocity(youtube, cid, min_velocity)
                 if not passes:
                     print(f"    ✗ {chan['snippet'].get('customUrl', '?')} "
-                          f"— {vel}/wk (too slow)")
+                          f"— {vel}/wk (too slow, min {min_velocity}/wk for {vertical}/{tier})")
                     continue
 
                 existing_ids.add(cid)
