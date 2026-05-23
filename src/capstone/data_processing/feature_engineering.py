@@ -413,6 +413,30 @@ def compute_duration_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================================
+# is_short interaction features
+# =========================================================================
+
+def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute is_short interaction terms.
+
+    YouTube Shorts and standard videos have fundamentally different engagement
+    dynamics. These interactions let models learn separate effective coefficients
+    for each format without requiring separate per-format models.
+
+    Requires: is_short (duration features), like_rate_24h and view_velocity_ratio
+    (ratio/velocity features) to already be present in df.
+    """
+    df = df.copy()
+
+    df['is_short_x_like_rate_24h'] = df['is_short'] * df['like_rate_24h']
+    df['is_short_x_view_velocity_ratio'] = df['is_short'] * df['view_velocity_ratio']
+
+    print(f"  Computed is_short interaction features")
+    return df
+
+
+# =========================================================================
 # Master pipeline
 # =========================================================================
 
@@ -428,32 +452,35 @@ def engineer_features(df_clean: pd.DataFrame) -> pd.DataFrame:
     print("Engineering features")
     print("=" * 60)
 
-    print("\n[1/9] Computing target variable...")
+    print("\n[1/10] Computing target variable...")
     df = compute_target(df_clean)
 
-    print("\n[2/9] Computing velocity features...")
+    print("\n[2/10] Computing velocity features...")
     df = compute_velocity_features(df)
 
-    print("\n[3/9] Computing ratio and baseline-normalized features...")
+    print("\n[3/10] Computing ratio and baseline-normalized features...")
     df = compute_ratio_features(df)
 
-    print("\n[4/9] Computing subscriber-normalized metrics...")
+    print("\n[4/10] Computing subscriber-normalized metrics...")
     df = compute_subscriber_normalized(df)
 
-    print("\n[5/9] Computing categorical features...")
+    print("\n[5/10] Computing categorical features...")
     df = compute_categorical_features(df)
 
-    print("\n[6/9] Computing text structural features...")
+    print("\n[6/10] Computing text structural features...")
     df = compute_text_features(df)
 
-    print("\n[7/9] Computing temporal features...")
+    print("\n[7/10] Computing temporal features...")
     df = compute_temporal_features(df)
 
-    print("\n[8/9] Computing duration features...")
+    print("\n[8/10] Computing duration features...")
     df = compute_duration_features(df)
 
-    print("\n[9/9] Computing thumbnail features...")
+    print("\n[9/10] Computing thumbnail features...")
     df = compute_thumbnail_features(df)
+
+    print("\n[10/10] Computing interaction features...")
+    df = compute_interaction_features(df)
 
     print(f"\n{'=' * 60}")
     print(f"Modeling table: {df.shape[0]} rows × {df.shape[1]} columns")
