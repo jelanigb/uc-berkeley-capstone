@@ -137,12 +137,26 @@ def compute_velocity_features(df: pd.DataFrame) -> pd.DataFrame:
     df['view_velocity_ratio'] = df['view_count_velocity_24h'] / baseline_views
 
     # --- 5. Acceleration: did momentum increase from upload window to 24h window? ---
+    # Computed from raw velocities before log-transform so the ratio is meaningful.
     df['view_velocity_acceleration'] = (
         df['view_count_velocity_24h'] / df['view_velocity_upload'].clip(lower=0.01)
     )
     df['like_velocity_acceleration'] = (
         df['like_count_velocity_24h'] / df['like_velocity_upload'].clip(lower=0.01)
     )
+
+    # --- 6. Log-transform count-scale velocity features ---
+    # Raw count velocities follow a power-law distribution across channel sizes.
+    # log1p compresses the tail without distorting rank order; clip(lower=0)
+    # guards against any residual negative deltas from data edge cases.
+    # Ratios, normalized rates, and acceleration features are left on their
+    # natural scale since they are already cross-channel-comparable.
+    for col in [
+        'view_count_velocity_24h', 'like_count_velocity_24h',
+        'comment_count_velocity_24h', 'subscriber_count_velocity_24h',
+        'view_velocity_upload', 'like_velocity_upload',
+    ]:
+        df[col] = np.log1p(df[col].clip(lower=0))
 
     print(f"  Computed velocity, upload momentum, normalized velocity, and acceleration features")
     return df
@@ -201,6 +215,14 @@ def compute_subscriber_normalized(df: pd.DataFrame) -> pd.DataFrame:
         df[f"views_per_sub_{suffix}"] = df[f"view_count_{suffix}"] / sub_count
         df[f"likes_per_sub_{suffix}"] = df[f"like_count_{suffix}"] / sub_count
         df[f"comments_per_sub_{suffix}"] = df[f"comment_count_{suffix}"] / sub_count
+
+    # Log-transform: dividing by subscriber count reduces but does not eliminate
+    # the power-law skew — a video at 10x its channel's norm still produces
+    # an outlier value after normalization.
+    for suffix in ['upload', '24h', '7d']:
+        for prefix in ['views_per_sub', 'likes_per_sub', 'comments_per_sub']:
+            col = f"{prefix}_{suffix}"
+            df[col] = np.log1p(df[col].clip(lower=0))
 
     print(f"  Computed subscriber-normalized metrics for upload/24h/7d")
     return df

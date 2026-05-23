@@ -86,13 +86,13 @@ class ModelTrainerLogic:
         rf = RandomForestClassifier(
             random_state=RANDOM_SEED_,
             n_jobs=-1,
-            **params["RandomForestClassifier"],
+            **params["RandomForest"],
         )
         xgb = XGBClassifier(
             random_state=RANDOM_SEED_,
             n_jobs=-1,
             eval_metric="logloss",
-            **params["XGBClassifier"],
+            **params["XGBoost"],
         )
 
         print("Training LogisticRegression (L1)...")
@@ -116,7 +116,7 @@ class ModelTrainerLogic:
                     RandomForestClassifier(
                         random_state=RANDOM_SEED_,
                         n_jobs=-1,
-                        **params["RandomForestClassifier"],
+                        **params["RandomForest"],
                     ),
                 ),
                 (
@@ -125,7 +125,7 @@ class ModelTrainerLogic:
                         random_state=RANDOM_SEED_,
                         n_jobs=-1,
                         eval_metric="logloss",
-                        **params["XGBClassifier"],
+                        **params["XGBoost"],
                     ),
                 ),
             ],
@@ -188,6 +188,13 @@ class ModelTrainerLogic:
             print(
                 f"Loaded hyperparams from snapshot '{config.hyperparam_version}'."
             )
+            # elasticnet requires l1_ratio but older snapshots omitted it from
+            # the tuning grid. Inject a balanced default so the model can fit.
+            lr_params = stored["params"].get("LogisticRegression", {})
+            if lr_params.get("penalty") == "elasticnet" and "l1_ratio" not in lr_params:
+                lr_params["l1_ratio"] = 0.5
+                stored["params"]["LogisticRegression"] = lr_params
+                print("  Note: injected l1_ratio=0.5 for elasticnet LR (missing from snapshot).")
             return stored["params"]
         except FileNotFoundError:
             print(
@@ -196,8 +203,8 @@ class ModelTrainerLogic:
             )
             return {
                 "LogisticRegression": dict(DEFAULT_LR_PARAMS_),
-                "RandomForestClassifier": dict(DEFAULT_RF_PARAMS_),
-                "XGBClassifier": dict(DEFAULT_XGB_PARAMS_),
+                "RandomForest": dict(DEFAULT_RF_PARAMS_),
+                "XGBoost": dict(DEFAULT_XGB_PARAMS_),
             }
 
     def _tune(
@@ -215,11 +222,11 @@ class ModelTrainerLogic:
                 LogisticRegression(random_state=RANDOM_SEED_),
             ),
             (
-                "RandomForestClassifier",
+                "RandomForest",
                 RandomForestClassifier(random_state=RANDOM_SEED_, n_jobs=-1),
             ),
             (
-                "XGBClassifier",
+                "XGBoost",
                 XGBClassifier(
                     random_state=RANDOM_SEED_, n_jobs=-1, eval_metric="logloss"
                 ),

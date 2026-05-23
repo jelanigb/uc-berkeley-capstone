@@ -35,8 +35,9 @@ from sklearn.model_selection import HalvingGridSearchCV
 _PARAM_GRIDS = {
     "LogisticRegression": {
         "C":        [0.001, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 100.0],
-        "penalty":  ["l1"],        # keep L1 — established in project
-        "solver":   ["saga"],      # only solver that supports L1 + large datasets
+        "penalty":  ["l1", "elasticnet"],
+        "solver":   ["saga"],      # only solver supporting L1/elasticnet + large datasets
+        "l1_ratio": [0.1, 0.3, 0.5, 0.7, 0.9],  # ignored by sklearn when penalty=l1
         "max_iter": [2000, 5000],
     },
     "RandomForestClassifier": {
