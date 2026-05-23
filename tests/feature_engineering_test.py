@@ -199,14 +199,15 @@ def test_compute_velocity_features_produces_expected_columns():
 
 def test_compute_velocity_features_arithmetic():
     row = base_row_()
-    # hours_24h = 25 - 1 = 24; view delta = 1100 - 100 = 1000 → raw velocity = 1000/24
-    # log1p is applied before returning, so expected = log1p(1000/24)
-    # TODO: this test replicates the transform logic inline — if the transform changes
-    # the test passes for the wrong reason. Refactor to assert output properties
-    # (e.g. result < raw_velocity, result > 0) or export a named transform constant.
+    # hours_24h = 25 - 1 = 24; view delta = 1100 - 100 = 1000 → raw velocity ≈ 41.67
+    # A compression transform (log1p) is applied, so the stored value should be
+    # positive, finite, and less than the raw velocity (log1p(x) < x for all x > 0).
     out = compute_velocity_features(df_(row))
-    expected_velocity = np.log1p((1100 - 100) / (25.0 - 1.0))
-    assert abs(out["view_count_velocity_24h"].iloc[0] - expected_velocity) < 1e-9
+    val = out["view_count_velocity_24h"].iloc[0]
+    raw_velocity = (1100 - 100) / (25.0 - 1.0)
+    assert val > 0
+    assert np.isfinite(val)
+    assert val < raw_velocity
 
 
 def test_compute_velocity_features_zero_hour_gap_does_not_divide_by_zero():
