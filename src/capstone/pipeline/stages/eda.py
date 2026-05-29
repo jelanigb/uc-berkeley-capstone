@@ -346,6 +346,119 @@ def plot_vertical_segmentation(
 
 
 # =========================================================================
+# Single-run split comparison (train / test / validation)
+# =========================================================================
+
+
+_SPLIT_COLORS = {"train": "#9ecae1", "test": "#3182bd", "val": "#08519c"}
+
+
+def plot_split_comparison(
+    results_by_split: dict,
+    metric: str = "roc_auc",
+    model_order: Optional[list] = None,
+    title: Optional[str] = None,
+    save_figure_name: Optional[str] = None,
+    figsize: tuple = (11, 6),
+):
+    """Grouped bar chart comparing one metric across train / test / validation per model.
+
+    Parameters
+    ----------
+    results_by_split : dict
+        {"train": {model_name: metrics_dict}, "test": {...}, "val": {...}}.
+        Each metrics_dict must contain `metric` (e.g. 'roc_auc'). Splits may be
+        omitted; only those present are plotted.
+    metric : str
+        Metric key to compare (default 'roc_auc').
+    model_order : list, optional
+        Explicit model ordering on the x-axis. Defaults to the validation
+        (else test/train) result keys.
+
+    The train-minus-validation gap is annotated above each model group as an
+    overfitting diagnostic: a large positive gap means the model fits the
+    training data far better than the held-out validation set.
+    """
+    splits = [s for s in ("train", "test", "val") if s in results_by_split]
+    if not splits:
+        print("No splits found in results_by_split — expected keys train/test/val.")
+        return
+
+    if model_order is None:
+        ref = (
+            results_by_split.get("val")
+            or results_by_split.get("test")
+            or results_by_split[splits[0]]
+        )
+        model_order = list(ref.keys())
+
+    n_splits = len(splits)
+    x = np.arange(len(model_order))
+    width = 0.8 / n_splits
+
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.set_theme(style="whitegrid")
+
+    # Collect all bar values upfront so we can set ylim before drawing text.
+    split_vals = {
+        split: [results_by_split[split].get(m, {}).get(metric, np.nan) for m in model_order]
+        for split in splits
+    }
+    finite_vals = [v for vals in split_vals.values() for v in vals if not np.isnan(v)]
+    y_max_data = max(finite_vals) if finite_vals else 1.0
+
+    for i, split in enumerate(splits):
+        vals = split_vals[split]
+        offset = (i - (n_splits - 1) / 2) * width
+        bars = ax.bar(
+            x + offset, vals, width,
+            label=split.capitalize(), color=_SPLIT_COLORS.get(split),
+        )
+        for b, v in zip(bars, vals):
+            if not np.isnan(v):
+                ax.text(
+                    b.get_x() + b.get_width() / 2, v + 0.005, f"{v:.3f}",
+                    ha="center", va="bottom", fontsize=7, rotation=90,
+                )
+
+    # Show only horizontal gridlines (y-axis), consistent with the other plots.
+    # whitegrid adds both axes; turn off the vertical ones so they don't cut
+    # through the bars. set_axisbelow keeps the remaining lines behind the bars.
+    ax.xaxis.grid(False)
+    ax.set_axisbelow(True)
+
+    # Overfit gap (train - val) annotated in data coordinates, safely inside
+    # the axes. Placed above the rotated value labels, with ylim expanded to
+    # give them room so they never collide with the title.
+    gap_label_y = y_max_data + 0.08   # above bar top + rotated value label
+    y_top = y_max_data + 0.18         # headroom above the gap labels
+
+    if "train" in split_vals and "val" in split_vals:
+        for j in range(len(model_order)):
+            tr = split_vals["train"][j]
+            vl = split_vals["val"][j]
+            if not (np.isnan(tr) or np.isnan(vl)):
+                ax.text(
+                    x[j], gap_label_y, f"gap {tr - vl:+.3f}",
+                    ha="center", va="bottom", fontsize=8, color="#b30000",
+                )
+
+    metric_label = metric.replace("_", " ").upper()
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_order)
+    ax.set_xlabel("Model")
+    ax.set_ylabel(metric_label)
+    ax.set_ylim(0, y_top)
+    ax.set_title(title or f"{metric_label} by Model — Train / Test / Validation")
+    ax.legend(title="Split", loc="lower right")
+    sns.despine()
+    plt.tight_layout()
+    if save_figure_name is not None:
+        _save_fig(plt, save_figure_name)
+    plt.show()
+
+
+# =========================================================================
 # Model Comparison (across versions and model types)
 # =========================================================================
 
@@ -537,20 +650,24 @@ def plot_precision_recall(
     model_type=None,
     save_figure_name: Optional[str] = None,
 ):
-    """2x2 grid: precision and recall for both classes across model versions."""
+    """3x2 grid: precision and recall for the overall (macro) average and both
+    classes across model versions. The top row is the global metric; the lower
+    rows are the per-class breakdown."""
     df = _get_filtered_comparison(run, compare_versions, model_type)
     df_plot, sorted_prefixes = _prep_comparison_df(df)
 
     palette_ = run.eda_config.get("palette", "Set2")
     fig_w, fig_h = run.eda_config["fig_size"]
-    fig, axes = plt.subplots(2, 2, figsize=(fig_w * 1.3, fig_h * 1.3))
+    fig, axes = plt.subplots(3, 2, figsize=(fig_w * 1.3, fig_h * 1.8))
     fig.suptitle("Precision & Recall by Model Version", y=1.01)
 
     specs_ = [
-        (axes[0, 0], "precision_above", "Precision — Above Baseline", False),
-        (axes[0, 1], "recall_above",    "Recall — Above Baseline",    True),
-        (axes[1, 0], "precision_below", "Precision — Below Baseline", False),
-        (axes[1, 1], "recall_below",    "Recall — Below Baseline",    False),
+        (axes[0, 0], "precision_macro", "Precision — Overall (macro)", False),
+        (axes[0, 1], "recall_macro",    "Recall — Overall (macro)",    True),
+        (axes[1, 0], "precision_above", "Precision — Above Baseline", False),
+        (axes[1, 1], "recall_above",    "Recall — Above Baseline",    False),
+        (axes[2, 0], "precision_below", "Precision — Below Baseline", False),
+        (axes[2, 1], "recall_below",    "Recall — Below Baseline",    False),
     ]
     for ax, col, title, show_legend in specs_:
         sns.lineplot(
@@ -579,14 +696,17 @@ def plot_f1(
     model_type=None,
     save_figure_name: Optional[str] = None,
 ):
-    """Side-by-side F1 for Above Baseline and Below Baseline across model versions."""
+    """F1 for the overall (macro) average, Above Baseline, and Below Baseline
+    across model versions. The overall macro F1 is shown first."""
     df = _get_filtered_comparison(run, compare_versions, model_type)
     df_plot, sorted_prefixes = _prep_comparison_df(df)
 
     palette_ = run.eda_config.get("palette", "Set2")
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=run.eda_config["fig_size"])
+    fig_w, fig_h = run.eda_config["fig_size"]
+    fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(fig_w * 1.4, fig_h))
 
     for ax, col, title, show_legend in [
+        (ax0, "f1_macro", "F1 — Overall (macro)", False),
         (ax1, "f1_above", "F1 — Above Baseline", False),
         (ax2, "f1_below", "F1 — Below Baseline", True),
     ]:

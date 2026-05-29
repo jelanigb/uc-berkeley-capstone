@@ -122,6 +122,11 @@ class SegmentAuditor:
                         "pct_positive": float(y_seg.mean()),
                         "roc_auc": roc_auc,
                         "accuracy": accuracy_score(y_seg, y_pred),
+                        # Global (macro) metrics — unweighted mean across both
+                        # classes, listed before the per-class breakdown.
+                        "precision_macro": precision_score(y_seg, y_pred, average="macro", zero_division=0),
+                        "recall_macro": recall_score(y_seg, y_pred, average="macro", zero_division=0),
+                        "f1_macro": f1_score(y_seg, y_pred, average="macro", zero_division=0),
                         "precision_above": precision_score(y_seg, y_pred, zero_division=0),
                         "recall_above": recall_score(y_seg, y_pred, zero_division=0),
                         "f1_above": f1_score(y_seg, y_pred, zero_division=0),

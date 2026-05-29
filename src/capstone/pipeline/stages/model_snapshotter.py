@@ -35,6 +35,9 @@ class ModelSnapshotter:
         self.config = config
 
     def run(self, run: PipelineRun) -> PipelineRun:
+        if self.config.is_dry_run:
+            print("[dry_run] ModelSnapshotter — GCS write skipped.")
+            return run
         if not self.config.take_snapshot_models:
             print("[ModelSnapshotter] take_snapshot_models=False — skipping.")
             return run

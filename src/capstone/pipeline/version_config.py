@@ -114,6 +114,13 @@ class VersionConfig:
         self.search_cv = 5
         self.search_scoring = "roc_auc"
         self.new_grids = {}  # model class name -> param grid override
+        self.tune_model_names_ = None  # None = tune all; else canonical names to tune
+
+        # Dry-run guardrail. When True, every snapshotter stage and commit()
+        # become no-ops that print a "writing skipped" message instead of
+        # touching GCS. Set via .dry_run(True) in the notebook config cell so
+        # the guardrail lives in one place rather than an if-guard per write.
+        self.dry_run_ = False
 
         # Run-wide flags (non-snapshot)
         self.use_synthetic_ = use_synthetic
@@ -297,6 +304,17 @@ class VersionConfig:
         self.flags_[Flag.HYPERPARAMS_MAJOR] = True
         return self
 
+    def dry_run(self, value: bool = True) -> "VersionConfig":
+        """Toggle the dry-run guardrail.
+
+        When True (the safe default for the report notebooks), every
+        snapshotter stage and `commit()` short-circuit with a
+        "writing skipped" message instead of writing to GCS. Flip to False
+        only when you intend to persist artifacts and bump versions.json.
+        """
+        self.dry_run_ = bool(value)
+        return self
+
     def tune(
         self,
         strategy: str = "random",
@@ -304,6 +322,7 @@ class VersionConfig:
         cv: int = 5,
         scoring: str = "roc_auc",
         new_grids: dict = None,
+        models: list = None,
     ) -> "VersionConfig":
         """
         Enable hyperparameter tuning and configure the search.
@@ -316,6 +335,11 @@ class VersionConfig:
         scoring   : sklearn scoring string
         new_grids : optional dict of {model_class_name: param_grid} overrides.
                     Any model not listed here uses get_default_param_grid().
+        models    : optional list of models to search. None tunes all of
+                    LR / RF / XGB; otherwise only the named subset is searched
+                    (the rest keep their loaded snapshot params). Accepts
+                    friendly aliases — "xgb", "rf", "lr"/"lr_l1" — or the
+                    canonical class names, normalized via normalize_model_names_.
         """
         self.flags_[Flag.TUNE] = True
         self.search_strategy = strategy
@@ -323,6 +347,7 @@ class VersionConfig:
         self.search_cv = cv
         self.search_scoring = scoring
         self.new_grids = new_grids or {}
+        self.tune_model_names_ = self.normalize_model_names_(models)
         return self
 
     def use_data_version(self, version: str, suffix: str = None) -> "VersionConfig":
@@ -517,11 +542,17 @@ class VersionConfig:
         print(f"  baselines_version : {ver_arrow_(self.baselines_version, self.next_baselines_version)}")
         print(f"  hyperparam_version: {ver_arrow_(self.hyperparam_version, self.next_hyperparam_version)}")
         print(f"  use_synthetic     : {self.use_synthetic_}")
+        print(f"  dry_run           : {self.dry_run_}"
+              + ("  (no GCS writes will occur)" if self.dry_run_ else ""))
         if self.flags_[Flag.TUNE]:
+            tune_target = self.tune_model_names_ or "all (LR, RF, XGB)"
             print(f"  Tuning            : strategy={self.search_strategy}, "
                   f"n_iter={self.search_n_iter}, cv={self.search_cv}, "
                   f"scoring={self.search_scoring}")
-        if any(self.flags_.values()):
+            print(f"  Tuning models     : {tune_target}")
+        if self.dry_run_:
+            print("\n  DRY RUN — set .dry_run(False) to persist artifacts and commit versions.")
+        elif any(self.flags_.values()):
             print("\n  Call config.commit() after all snapshots succeed.")
 
     # =========================================================================
@@ -535,6 +566,9 @@ class VersionConfig:
         """
         if not self.built_:
             raise RuntimeError("Call .build() before .commit().")
+        if self.dry_run_:
+            print("[dry_run] commit skipped — versions.json not written to GCS.")
+            return
         if not any(self.flags_.values()):
             print("No snapshots were active — nothing to commit.")
             return
@@ -599,6 +633,22 @@ class VersionConfig:
         return self.flags_[Flag.TUNE]
 
     @property
+    def tune_model_names(self) -> Optional[list]:
+        """Canonical names of models to search, or None to search all of them.
+        Read by ModelTrainer to restrict the search to an explicit subset.
+        """
+        return self.tune_model_names_
+
+    @property
+    def is_dry_run(self) -> bool:
+        """When True, snapshotter stages and commit() skip all GCS writes.
+
+        Named `is_dry_run` (not `dry_run`) so it doesn't collide with the
+        `dry_run()` builder method used in the notebook config cell.
+        """
+        return self.dry_run_
+
+    @property
     def use_synthetic(self) -> bool:
         return self.use_synthetic_
 
@@ -622,6 +672,43 @@ class VersionConfig:
     # =========================================================================
     # Helpers
     # =========================================================================
+
+    # Friendly aliases -> canonical model-class names used by ModelTrainer's
+    # tuning candidates and the hyperparam grids.
+    MODEL_NAME_ALIASES_ = {
+        "lr": "LogisticRegression",
+        "lr_l1": "LogisticRegression",
+        "logisticregression": "LogisticRegression",
+        "rf": "RandomForest",
+        "randomforest": "RandomForest",
+        "randomforestclassifier": "RandomForest",
+        "xgb": "XGBoost",
+        "xgboost": "XGBoost",
+        "xgbclassifier": "XGBoost",
+    }
+
+    @classmethod
+    def normalize_model_names_(cls, models) -> Optional[list]:
+        """Normalize a list of model aliases to canonical class names.
+
+        Returns None when `models` is None (meaning: tune everything).
+        Raises ValueError on an unrecognized name so a typo fails loudly
+        rather than silently tuning nothing.
+        """
+        if models is None:
+            return None
+        canonical = []
+        for name in models:
+            key = str(name).strip().lower()
+            if key not in cls.MODEL_NAME_ALIASES_:
+                raise ValueError(
+                    f"Unknown model name {name!r} for tuning. "
+                    f"Use one of: lr, rf, xgb (or their class names)."
+                )
+            resolved = cls.MODEL_NAME_ALIASES_[key]
+            if resolved not in canonical:
+                canonical.append(resolved)
+        return canonical
 
     @staticmethod
     def parse_version_(version_str: str) -> tuple:

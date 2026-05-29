@@ -36,6 +36,8 @@ This shape is consumed by ModelSnapshotter and HyperparamSnapshotter.
 Validator also accepts it; see validator.py for how it unpacks either shape.
 """
 
+import time
+
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -77,6 +79,7 @@ class ModelTrainerLogic:
         feature_cols = X_train.columns.tolist()
         params = self._load_params(config)
 
+        self.tune_elapsed_s_ = None
         if config.tune_models:
             params = self._tune(X_train, y_train, params, config)
 
@@ -232,6 +235,21 @@ class ModelTrainerLogic:
                 ),
             ),
         ]
+
+        # Restrict the search to an explicit subset when the notebook asked for
+        # it (config.tune_model_names). Models left out keep their loaded params,
+        # so a tuning run can target only the top models without re-searching the
+        # rest. None means tune every candidate.
+        selected = config.tune_model_names
+        if selected is not None:
+            candidates = [(c, m) for c, m in candidates if c in selected]
+            skipped = [c for c, _ in [
+                ("LogisticRegression", None), ("RandomForest", None), ("XGBoost", None)
+            ] if c not in selected]
+            print(f"Tuning subset: {[c for c, _ in candidates]} "
+                  f"(keeping loaded params for {skipped})")
+
+        t0 = time.perf_counter()
         for model_cls, base_model in candidates:
             param_grid = config.new_grids.get(
                 model_cls
@@ -252,6 +270,7 @@ class ModelTrainerLogic:
                 random_state=RANDOM_SEED_,
             )
             tuned[model_cls] = result["best_params"]
+        self.tune_elapsed_s_ = time.perf_counter() - t0
 
         print("\n=== Tuning complete — best params ===")
         for cls, p in tuned.items():
@@ -306,4 +325,5 @@ class ModelTrainer:
             entry["feature_cols"] = self.scaler.feature_cols_
 
         run.models = entries
+        run.tune_elapsed_s = getattr(self.logic, "tune_elapsed_s_", None)
         return run

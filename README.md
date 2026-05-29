@@ -177,10 +177,15 @@ Adding new signals to the pipeline requires re-engineering the harvesting script
 
 #### **Project Notebooks**
 
-- [Exploratory Data Analysis](./src/capstone/notebooks/eda.ipynb)  
-- [Model Training](./src/capstone/notebooks/retrain_models.ipynb)  
-- [Hyperparameter Tuning](./src/capstone/notebooks/hyperparam_tuning.ipynb)  
-- [Model Results Analysis](./src/capstone/notebooks/model_results_analysis.ipynb)
+The notebooks form a numbered sequence; see the
+[notebook guide](./src/capstone/notebooks/notebooks.md) for how they fit together
+and when to run each.
+
+- [01 · EDA — Raw Data](./src/capstone/notebooks/01_eda_raw_data.ipynb)
+- [02 · Feature Engineering + Engineered-Data EDA](./src/capstone/notebooks/02_feature_engineering_eda.ipynb)
+- [03 · Model Training + Results](./src/capstone/notebooks/03_model_training_results.ipynb)
+- [04 · Hyperparameter Tuning](./src/capstone/notebooks/04_hyperparameter_tuning.ipynb)
+- [05 · Final Model Selection + Results](./src/capstone/notebooks/05_final_model_selection.ipynb)
 
 ---
 
@@ -194,7 +199,7 @@ The underlying Python code is organized into a `pipeline/` package that implemen
 
 #### **Capstone Project Week 20 Check-In**
 
-For the Week 20 check-in, please review the [Exploratory Data Analysis](./src/capstone/notebooks/eda.ipynb) and [Model Results Analysis](./src/capstone/notebooks/model_results_analysis.ipynb) notebooks.
+For the Week 20 check-in, please review the [01 · EDA — Raw Data](./src/capstone/notebooks/01_eda_raw_data.ipynb) and [03 · Model Training + Results](./src/capstone/notebooks/03_model_training_results.ipynb) notebooks.
 
 ---
 

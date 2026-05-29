@@ -315,6 +315,73 @@ def test_target_real_pct_none_when_not_synthetic():
 
 
 # =========================================================================
+# dry_run guardrail
+# =========================================================================
+
+def test_dry_run_defaults_false():
+    assert config_().is_dry_run is False
+
+
+def test_dry_run_sets_flag_and_returns_self():
+    c = config_()
+    result = c.dry_run()
+    assert result is c
+    assert c.is_dry_run is True
+
+
+def test_dry_run_explicit_false():
+    c = config_().dry_run(True).dry_run(False)
+    assert c.is_dry_run is False
+
+
+def test_commit_in_dry_run_skips_without_gcs(capsys):
+    # dry_run commit must short-circuit before any GCS access and not raise.
+    c = config_().snapshot_models().dry_run().build()
+    c.commit()
+    out = capsys.readouterr().out
+    assert "dry_run" in out.lower()
+
+
+def test_dry_run_chains_with_other_builders():
+    c = config_().snapshot_models().dry_run().build()
+    assert c.is_dry_run is True
+    assert c.flags_[Flag.MODELS] is True
+
+
+# =========================================================================
+# tune(models=...) — per-model search subset
+# =========================================================================
+
+def test_tune_models_none_tunes_all():
+    c = config_().tune()
+    assert c.tune_model_names is None
+
+
+def test_tune_models_normalizes_aliases():
+    c = config_().tune(models=["xgb", "rf"])
+    assert c.tune_model_names == ["XGBoost", "RandomForest"]
+
+
+def test_tune_models_accepts_lr_l1_alias():
+    c = config_().tune(models=["lr_l1"])
+    assert c.tune_model_names == ["LogisticRegression"]
+
+
+def test_tune_models_dedupes():
+    c = config_().tune(models=["xgb", "XGBoost", "xgbclassifier"])
+    assert c.tune_model_names == ["XGBoost"]
+
+
+def test_tune_models_unknown_raises():
+    with pytest.raises(ValueError, match="Unknown model name"):
+        config_().tune(models=["catboost"])
+
+
+def test_normalize_model_names_none_returns_none():
+    assert VersionConfig.normalize_model_names_(None) is None
+
+
+# =========================================================================
 # search_config property
 # =========================================================================
 

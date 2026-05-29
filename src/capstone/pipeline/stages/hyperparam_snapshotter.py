@@ -25,6 +25,9 @@ class HyperparamSnapshotter:
         self.config = config
 
     def run(self, run: PipelineRun) -> PipelineRun:
+        if self.config.is_dry_run:
+            print("[dry_run] HyperparamSnapshotter — GCS write skipped.")
+            return run
         if not self.config.take_snapshot_hyperparams:
             print("[HyperparamSnapshotter] take_snapshot_hyperparams=False — skipping.")
             return run

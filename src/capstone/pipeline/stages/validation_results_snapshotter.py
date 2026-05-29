@@ -18,6 +18,9 @@ class ValidationResultsSnapshotter:
         self.config = config
 
     def run(self, run: PipelineRun) -> PipelineRun:
+        if self.config.is_dry_run:
+            print("[dry_run] ValidationResultsSnapshotter — GCS append skipped.")
+            return run
         if not run.results:
             raise RuntimeError(
                 "ValidationResultsSnapshotter: run.results is empty. "

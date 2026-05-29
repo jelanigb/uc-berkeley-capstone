@@ -98,9 +98,20 @@ class TrainingData:
 
 @dataclass
 class ModelResult:
-    """Captures evaluation metrics from a trained model."""
+    """Captures evaluation metrics from a trained model.
+
+    Global precision/recall/F1 (`*_macro`) are sklearn's macro averages —
+    the unweighted mean of the above-baseline and below-baseline class scores
+    (equivalent to sklearn `average='macro'`). They give a single overall
+    number that treats both classes equally, alongside the per-class breakdown
+    that follows. Listed before the per-class fields so they surface first in
+    any metrics table.
+    """
     roc_auc: float
     accuracy: float
+    precision_macro: float
+    recall_macro: float
+    f1_macro: float
     precision_above: float
     recall_above: float
     f1_above: float
@@ -140,6 +151,9 @@ class ModelResult:
         return cls(
             roc_auc=round(roc_auc_score(y_test, y_pred_proba), 4),
             accuracy=round(float((y_pred == y_test).mean()), 4),
+            precision_macro=round(report['macro avg']['precision'], 4),
+            recall_macro=round(report['macro avg']['recall'], 4),
+            f1_macro=round(report['macro avg']['f1-score'], 4),
             precision_above=round(report['Above Baseline']['precision'], 4),
             recall_above=round(report['Above Baseline']['recall'], 4),
             f1_above=round(report['Above Baseline']['f1-score'], 4),
@@ -593,12 +607,31 @@ def load_validation_results(model_version: str = None) -> pd.DataFrame:
     return df
 
 
+def _macro_metric_(result: dict, metric: str):
+    """Return the global (macro) value for a metric from a stored result dict.
+
+    Checks for `<metric>_macro` (current field name) then `<metric>_total`
+    (prior field name, kept for backwards compatibility with old GCS snapshots).
+    Falls back to deriving the macro average from the per-class values for
+    snapshots that predate both names. Returns None if nothing is available.
+    """
+    val = result.get(f"{metric}_macro") or result.get(f"{metric}_total")
+    if val is not None:
+        return val
+    above = result.get(f"{metric}_above")
+    below = result.get(f"{metric}_below")
+    if above is not None and below is not None:
+        return round((above + below) / 2, 4)
+    return None
+
+
 def compare_models() -> pd.DataFrame:
     """
     Load all saved model metadata from GCS and return a comparison DataFrame.
 
     Columns: version, model_type, data_snapshot, training_date,
              real_rows, synth_rows, accuracy, roc_auc,
+             precision_macro, recall_macro, f1_macro,
              precision_above, recall_above, f1_above,
              precision_below, recall_below, f1_below
 
@@ -625,6 +658,12 @@ def compare_models() -> pd.DataFrame:
             'synth_rows':     td.get('synthetic_train_rows', None),
             'accuracy':       r.get('accuracy', None),
             'roc_auc':        r.get('roc_auc', None),
+            # Global (macro) metrics. Snapshots saved before these fields existed
+            # don't store them, so derive the macro average from the per-class
+            # values — macro precision/recall/F1 is just their unweighted mean.
+            'precision_macro': _macro_metric_(r, 'precision'),
+            'recall_macro':    _macro_metric_(r, 'recall'),
+            'f1_macro':        _macro_metric_(r, 'f1'),
             'precision_above': r.get('precision_above', None),
             'recall_above':    r.get('recall_above', None),
             'f1_above':        r.get('f1_above', None),

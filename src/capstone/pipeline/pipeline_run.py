@@ -102,6 +102,9 @@ class PipelineRun:
     # Synthetic row count (set by SyntheticAugmenter; read by ModelTrainer)
     num_synth_rows: int = 0
 
+    # Wall-clock seconds spent in hyperparameter search (set by ModelTrainer; None when no tuning)
+    tune_elapsed_s: Optional[float] = None
+
     # Model artifacts (populated by ModelTrainer)
     models: dict = field(default_factory=dict)
 

@@ -51,8 +51,9 @@ def test_audit_has_expected_columns():
     results = SegmentAuditor(models, X_val, y_val, df_val).audit()
     expected = {
         "model", "segment_type", "segment_value", "n_samples",
-        "pct_positive", "roc_auc", "accuracy", "precision_above",
-        "recall_above", "f1_above", "recall_below",
+        "pct_positive", "roc_auc", "accuracy",
+        "precision_macro", "recall_macro", "f1_macro",
+        "precision_above", "recall_above", "f1_above", "recall_below",
     }
     assert expected.issubset(set(results.columns))
 

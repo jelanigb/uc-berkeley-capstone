@@ -106,6 +106,19 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
+    # --- Drop videos with an unknown synthetic-media flag ---
+    # A null contains_synthetic_media means the platform flag could not be
+    # retrieved — typically because the video was later made private or failed
+    # at some stage of harvesting. These are few; exclude them rather than
+    # impute, so df_clean carries a fully-populated flag.
+    if 'contains_synthetic_media' in df.columns:
+        before = len(df)
+        df = df[df['contains_synthetic_media'].notna()].copy()
+        removed = before - len(df)
+        if removed:
+            print(f"  Dropped {removed} row(s) with null contains_synthetic_media "
+                  f"(private/failed harvest).")
+
     # --- Whitespace cleanup on text fields ---
     for col in ['title', 'description', 'channel_handle']:
         if col in df.columns:

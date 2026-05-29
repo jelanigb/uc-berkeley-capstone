@@ -215,6 +215,30 @@ def test_clean_data_positive_metrics_unchanged():
     assert out["view_count_upload"].iloc[0] == 500
 
 
+def test_clean_data_drops_null_contains_synthetic_media():
+    df = pd.DataFrame([
+        {"title": "a", "description": "d", "channel_handle": "h", "tags": [],
+         "contains_synthetic_media": False},
+        {"title": "b", "description": "d", "channel_handle": "h", "tags": [],
+         "contains_synthetic_media": None},
+        {"title": "c", "description": "d", "channel_handle": "h", "tags": [],
+         "contains_synthetic_media": True},
+    ])
+    out = clean_data(df)
+    assert len(out) == 2
+    assert out["contains_synthetic_media"].notna().all()
+    assert set(out["title"]) == {"a", "c"}
+
+
+def test_clean_data_without_synthetic_media_col_is_unaffected():
+    # The drop is guarded — frames lacking the column pass through unchanged.
+    df = pd.DataFrame([{
+        "title": "t", "description": "d", "channel_handle": "h", "tags": [],
+    }])
+    out = clean_data(df)
+    assert len(out) == 1
+
+
 def test_clean_data_returns_independent_copy():
     df = pd.DataFrame([{
         "title": "  trimmed  ", "description": "d", "channel_handle": "h",

@@ -24,6 +24,9 @@ class FinalSnapshotter:
         self.config = config
 
     def run(self, run: PipelineRun) -> PipelineRun:
+        if self.config.is_dry_run:
+            print("[dry_run] FinalSnapshotter — GCS write skipped.")
+            return run
         if not self.config.take_snapshot_final:
             print("[FinalSnapshotter] take_snapshot_final=False — skipping.")
             return run

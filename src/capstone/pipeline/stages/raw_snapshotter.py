@@ -21,6 +21,9 @@ class RawSnapshotter:
         self.config = config
 
     def run(self, run: PipelineRun) -> PipelineRun:
+        if self.config.is_dry_run:
+            print("[dry_run] RawSnapshotter — GCS write skipped.")
+            return run
         if not self.config.take_snapshot_raw:
             print("[RawSnapshotter] take_snapshot_raw=False — skipping.")
             return run
