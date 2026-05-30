@@ -348,6 +348,54 @@ def test_dry_run_chains_with_other_builders():
     assert c.flags_[Flag.MODELS] is True
 
 
+def test_dry_run_suppresses_version_bump_in_build():
+    # Snapshot flag is set, but a dry run must report the version unchanged
+    # (nothing is written, so nothing bumps).
+    m = DEFAULT_STATE_["model"]
+    c = config_().snapshot_models().dry_run().build()
+    assert c.next_model_version == f"v{m['major']}.{m['minor']}"
+    assert c.model_version == f"v{m['major']}.{m['minor']}"
+
+
+def test_dry_run_suppresses_final_data_bump():
+    d = DEFAULT_STATE_["data"]
+    c = config_().snapshot_final().dry_run().build()
+    assert c.next_final_version == f"v{d['major']}.{d['minor']}_100real"
+
+
+def test_non_dry_run_still_bumps_with_snapshot_flag():
+    # Guard against over-suppression: a real run must still bump.
+    m = DEFAULT_STATE_["model"]
+    c = config_().snapshot_models().dry_run(False).build()
+    assert c.next_model_version == f"v{m['major']}.{m['minor'] + 1}"
+
+
+# =========================================================================
+# skip_eda guardrail
+# =========================================================================
+
+def test_skip_eda_defaults_false():
+    assert config_().is_skip_eda is False
+
+
+def test_skip_eda_sets_flag_and_returns_self():
+    c = config_()
+    result = c.skip_eda()
+    assert result is c
+    assert c.is_skip_eda is True
+
+
+def test_skip_eda_explicit_false():
+    c = config_().skip_eda(True).skip_eda(False)
+    assert c.is_skip_eda is False
+
+
+def test_skip_eda_chains_with_dry_run():
+    c = config_().dry_run().skip_eda().build()
+    assert c.is_dry_run is True
+    assert c.is_skip_eda is True
+
+
 # =========================================================================
 # tune(models=...) — per-model search subset
 # =========================================================================

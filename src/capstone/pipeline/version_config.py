@@ -118,9 +118,17 @@ class VersionConfig:
 
         # Dry-run guardrail. When True, every snapshotter stage and commit()
         # become no-ops that print a "writing skipped" message instead of
-        # touching GCS. Set via .dry_run(True) in the notebook config cell so
-        # the guardrail lives in one place rather than an if-guard per write.
+        # touching GCS, and build() reports every version as unchanged (no
+        # bump is computed or displayed). Set via .dry_run(True) in the
+        # notebook config cell so the guardrail lives in one place rather than
+        # an if-guard per write. This lets the config cell chain its snapshot
+        # methods unconditionally — dry_run alone decides whether they take
+        # effect — so the notebook never branches on the flag itself.
         self.dry_run_ = False
+
+        # Post-engineering EDA toggle (notebook 02). When True, the EDA plot
+        # cells short-circuit. Default False (EDA runs); set via .skip_eda().
+        self.skip_eda_ = False
 
         # Run-wide flags (non-snapshot)
         self.use_synthetic_ = use_synthetic
@@ -309,10 +317,27 @@ class VersionConfig:
 
         When True (the safe default for the report notebooks), every
         snapshotter stage and `commit()` short-circuit with a
-        "writing skipped" message instead of writing to GCS. Flip to False
-        only when you intend to persist artifacts and bump versions.json.
+        "writing skipped" message instead of writing to GCS, and `build()`
+        treats every snapshot flag as inactive so the summary reports all
+        versions as unchanged (no phantom bump for writes that won't happen).
+        Flip to False only when you intend to persist artifacts and bump
+        versions.json.
+
+        Because the bump is suppressed here rather than in the notebook, the
+        config cell can chain its snapshot methods unconditionally — there is
+        no need to guard them with `if not IS_DRY_RUN`.
         """
         self.dry_run_ = bool(value)
+        return self
+
+    def skip_eda(self, value: bool = True) -> "VersionConfig":
+        """Skip the post-engineering EDA plots (notebook 02 only).
+
+        Default is to run the EDA cells. Chain `.skip_eda()` to short-circuit
+        them when you only need to rebuild or snapshot the engineered data and
+        want to avoid the slower plotting step. Read back via `is_skip_eda`.
+        """
+        self.skip_eda_ = bool(value)
         return self
 
     def tune(
@@ -406,26 +431,31 @@ class VersionConfig:
         """
         self.validate_pin_conflicts_()
 
+        # In a dry run nothing is persisted, so no version should bump. Gating
+        # the write flags here (rather than in each notebook) lets the config
+        # cell chain its snapshot methods unconditionally — see dry_run().
+        writes_active = not self.dry_run_
+
         self.new_data_ = self.compute_new_version_(
             current=(self.state_["data"]["major"], self.state_["data"]["minor"]),
-            write_flag=self.flags_[Flag.RAW] or self.flags_[Flag.FINAL] or self.flags_[Flag.DATA_MAJOR],
+            write_flag=writes_active and (self.flags_[Flag.RAW] or self.flags_[Flag.FINAL] or self.flags_[Flag.DATA_MAJOR]),
             major_flag=self.flags_[Flag.DATA_MAJOR],
         )
         self.new_model_ = self.compute_new_version_(
             current=(self.state_["model"]["major"], self.state_["model"]["minor"]),
-            write_flag=self.flags_[Flag.MODELS],
+            write_flag=writes_active and self.flags_[Flag.MODELS],
             major_flag=self.flags_[Flag.MODEL_MAJOR],
         )
         # Baselines only ever do major bumps — minor is not meaningful.
         # Triggered by snapshot_raw() (new data pull) and snapshot_models_new_data().
         self.new_baselines_ = self.compute_new_version_(
             current=(self.state_["baselines"]["major"], self.state_["baselines"]["minor"]),
-            write_flag=self.flags_[Flag.BASELINES_MAJOR],
+            write_flag=writes_active and self.flags_[Flag.BASELINES_MAJOR],
             major_flag=True,
         )
         self.new_hyperparams_ = self.compute_new_version_(
             current=(self.state_["hyperparams"]["major"], self.state_["hyperparams"]["minor"]),
-            write_flag=self.flags_[Flag.HYPERPARAMS],
+            write_flag=writes_active and self.flags_[Flag.HYPERPARAMS],
             major_flag=self.flags_[Flag.HYPERPARAMS_MAJOR],
         )
 
@@ -507,7 +537,9 @@ class VersionConfig:
         return (major, minor + 1)
 
     def print_build_summary_(self):
-        active = [k.value for k, v in self.flags_.items() if v]
+        # In a dry run the snapshot flags are inert (no bump, no write), so
+        # report them as none to match the "unchanged" version lines below.
+        active = [] if self.dry_run_ else [k.value for k, v in self.flags_.items() if v]
         d_cur = (self.state_["data"]["major"], self.state_["data"]["minor"])
         b_cur = (self.state_["baselines"]["major"], self.state_["baselines"]["minor"])
         m_cur = (self.state_["model"]["major"], self.state_["model"]["minor"])
@@ -544,6 +576,8 @@ class VersionConfig:
         print(f"  use_synthetic     : {self.use_synthetic_}")
         print(f"  dry_run           : {self.dry_run_}"
               + ("  (no GCS writes will occur)" if self.dry_run_ else ""))
+        if self.skip_eda_:
+            print(f"  skip_eda          : True  (post-engineering EDA plots skipped)")
         if self.flags_[Flag.TUNE]:
             tune_target = self.tune_model_names_ or "all (LR, RF, XGB)"
             print(f"  Tuning            : strategy={self.search_strategy}, "
@@ -647,6 +681,16 @@ class VersionConfig:
         `dry_run()` builder method used in the notebook config cell.
         """
         return self.dry_run_
+
+    @property
+    def is_skip_eda(self) -> bool:
+        """When True, notebook 02's post-engineering EDA cells short-circuit.
+
+        Named `is_skip_eda` (not `skip_eda`) so it doesn't collide with the
+        `skip_eda()` builder method, mirroring the `dry_run()`/`is_dry_run`
+        pair.
+        """
+        return self.skip_eda_
 
     @property
     def use_synthetic(self) -> bool:
