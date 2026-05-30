@@ -115,6 +115,8 @@ class ModelTrainerLogic:
             **params["MLP"],
         )
 
+        t0 = time.perf_counter()
+
         print("Training LogisticRegression (L1)...")
         lr.fit(X_train, y_train)
 
@@ -169,6 +171,8 @@ class ModelTrainerLogic:
         )
         stacking.fit(X_train, y_train)
 
+        self.train_elapsed_s_ = time.perf_counter() - t0
+
         total_train = len(X_train)
         training_data = TrainingData(
             real_train_rows=total_train - num_synth_rows,
@@ -190,8 +194,8 @@ class ModelTrainerLogic:
             "xgb":      self._entry(xgb,      X_test, y_test, feature_cols, training_data),
             "lgb":      self._entry(lgb,      X_test, y_test, feature_cols, training_data),
             "mlp":      self._entry(mlp,      X_test, y_test, feature_cols, training_data),
-            "ensemble": self._entry(ensemble, X_test, y_test, feature_cols, training_data),
-            "stacking": self._entry(stacking, X_test, y_test, feature_cols, training_data),
+            "ensemble_voting":   self._entry(ensemble, X_test, y_test, feature_cols, training_data),
+            "ensemble_stacking": self._entry(stacking, X_test, y_test, feature_cols, training_data),
         }
         self._print_summary(entries)
         return entries
@@ -334,11 +338,12 @@ class ModelTrainerLogic:
 
     @staticmethod
     def _print_summary(entries: dict) -> None:
+        w = max(len(n) for n in entries) + 1
         print("\n=== ModelTrainer — test-set results ===")
         for name, entry in entries.items():
             r = entry["result"]
             print(
-                f"  {name:<12}  AUC={r.roc_auc:.4f}  "
+                f"  {name:<{w}}  AUC={r.roc_auc:.4f}  "
                 f"acc={r.accuracy:.4f}  F1↑={r.f1_above:.4f}"
             )
 
@@ -380,5 +385,6 @@ class ModelTrainer:
             entry["feature_cols"] = self.scaler.feature_cols_
 
         run.models = entries
+        run.train_elapsed_s = getattr(self.logic, "train_elapsed_s_", None)
         run.tune_elapsed_s = getattr(self.logic, "tune_elapsed_s_", None)
         return run
