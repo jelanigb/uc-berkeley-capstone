@@ -109,10 +109,11 @@ class ModelTrainerLogic:
             verbose=-1,
             **params["LightGBM"],
         )
+        mlp_params = {k: v for k, v in params["MLP"].items() if k != "early_stopping"}
         mlp = MLPClassifier(
             random_state=RANDOM_SEED_,
             early_stopping=True,
-            **params["MLP"],
+            **mlp_params,
         )
 
         t0 = time.perf_counter()
