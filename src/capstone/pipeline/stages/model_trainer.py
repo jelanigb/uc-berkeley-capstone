@@ -1,6 +1,7 @@
 """
-ModelTrainer — train LR (L1), RF, XGB, and a soft-voting ensemble on X_train;
-evaluate each on X_test; populate run.models with artifacts for snapshotting.
+ModelTrainer — train LR (L1), RF, XGB, LightGBM, MLP, and a soft-voting ensemble
+on X_train; evaluate each on X_test; populate run.models with artifacts for
+snapshotting.
 
 Architecture
 ------------
@@ -39,8 +40,10 @@ Validator also accepts it; see validator.py for how it unpacks either shape.
 import time
 
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from lightgbm import LGBMClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 
 from pipeline.pipeline_run import PipelineRun, Stage
@@ -49,6 +52,8 @@ from pipeline.version_config import (
     DEFAULT_LR_PARAMS_,
     DEFAULT_RF_PARAMS_,
     DEFAULT_XGB_PARAMS_,
+    DEFAULT_LGB_PARAMS_,
+    DEFAULT_MLP_PARAMS_,
 )
 from pipeline.stages.scaler import Scaler
 from utils.snapshot_hyperparameters import load_hyperparams
@@ -57,6 +62,7 @@ from utils.tune_hyperparameters import get_default_param_grid, tune_model
 
 
 RANDOM_SEED_ = 42
+MLP_MAX_N_ITER_ = 50  # MLP has no within-model parallelism; cap its search budget
 
 
 class ModelTrainerLogic:
@@ -97,6 +103,17 @@ class ModelTrainerLogic:
             eval_metric="logloss",
             **params["XGBoost"],
         )
+        lgb = LGBMClassifier(
+            random_state=RANDOM_SEED_,
+            n_jobs=-1,
+            verbose=-1,
+            **params["LightGBM"],
+        )
+        mlp = MLPClassifier(
+            random_state=RANDOM_SEED_,
+            early_stopping=True,
+            **params["MLP"],
+        )
 
         print("Training LogisticRegression (L1)...")
         lr.fit(X_train, y_train)
@@ -107,35 +124,50 @@ class ModelTrainerLogic:
         print("Training XGBClassifier...")
         xgb.fit(X_train, y_train)
 
-        # Ensemble uses fresh RF/XGB instances with the same best params so
-        # VotingClassifier manages its own fitted copies internally.
-        print(
-            "Training VotingClassifier ensemble (RF + XGB, weights=[1, 2])..."
-        )
+        print("Training LGBMClassifier...")
+        lgb.fit(X_train, y_train)
+
+        print("Training MLPClassifier...")
+        mlp.fit(X_train, y_train)
+
+        # Both ensembles use fresh base-model instances with the same best params
+        # so their internal fitters manage their own fitted copies.
+
+        print("Training VotingClassifier ensemble (RF + XGB, soft vote, weights=[1, 2])...")
         ensemble = VotingClassifier(
             estimators=[
-                (
-                    "rf",
-                    RandomForestClassifier(
-                        random_state=RANDOM_SEED_,
-                        n_jobs=-1,
-                        **params["RandomForest"],
-                    ),
-                ),
-                (
-                    "xgb",
-                    XGBClassifier(
-                        random_state=RANDOM_SEED_,
-                        n_jobs=-1,
-                        eval_metric="logloss",
-                        **params["XGBoost"],
-                    ),
-                ),
+                ("rf", RandomForestClassifier(
+                    random_state=RANDOM_SEED_, n_jobs=-1, **params["RandomForest"])),
+                ("xgb", XGBClassifier(
+                    random_state=RANDOM_SEED_, n_jobs=-1,
+                    eval_metric="logloss", **params["XGBoost"])),
             ],
             voting="soft",
             weights=[1, 2],
         )
         ensemble.fit(X_train, y_train)
+
+        # Stacking: RF + XGB + LGB base learners → LR meta-learner trained on
+        # 5-fold out-of-fold probability predictions. The meta-learner learns the
+        # optimal combination from held-out data rather than averaging blindly,
+        # which better exploits the diversity between the three tree families.
+        print("Training StackingClassifier (RF + XGB + LGB → LR, 5-fold CV)...")
+        stacking = StackingClassifier(
+            estimators=[
+                ("rf", RandomForestClassifier(
+                    random_state=RANDOM_SEED_, n_jobs=-1, **params["RandomForest"])),
+                ("xgb", XGBClassifier(
+                    random_state=RANDOM_SEED_, n_jobs=-1,
+                    eval_metric="logloss", **params["XGBoost"])),
+                ("lgb", LGBMClassifier(
+                    random_state=RANDOM_SEED_, n_jobs=-1,
+                    verbose=-1, **params["LightGBM"])),
+            ],
+            final_estimator=LogisticRegression(C=1.0, max_iter=1000),
+            cv=5,
+            n_jobs=-1,
+        )
+        stacking.fit(X_train, y_train)
 
         total_train = len(X_train)
         training_data = TrainingData(
@@ -153,16 +185,13 @@ class ModelTrainerLogic:
         )
 
         entries = {
-            "lr_l1": self._entry(
-                lr, X_test, y_test, feature_cols, training_data
-            ),
-            "rf": self._entry(rf, X_test, y_test, feature_cols, training_data),
-            "xgb": self._entry(
-                xgb, X_test, y_test, feature_cols, training_data
-            ),
-            "ensemble": self._entry(
-                ensemble, X_test, y_test, feature_cols, training_data
-            ),
+            "lr_l1":    self._entry(lr,       X_test, y_test, feature_cols, training_data),
+            "rf":       self._entry(rf,       X_test, y_test, feature_cols, training_data),
+            "xgb":      self._entry(xgb,      X_test, y_test, feature_cols, training_data),
+            "lgb":      self._entry(lgb,      X_test, y_test, feature_cols, training_data),
+            "mlp":      self._entry(mlp,      X_test, y_test, feature_cols, training_data),
+            "ensemble": self._entry(ensemble, X_test, y_test, feature_cols, training_data),
+            "stacking": self._entry(stacking, X_test, y_test, feature_cols, training_data),
         }
         self._print_summary(entries)
         return entries
@@ -185,30 +214,45 @@ class ModelTrainerLogic:
         }
 
     def _load_params(self, config: VersionConfig) -> dict:
-        """Load params from GCS hyperparam snapshot; fall back to VersionConfig defaults."""
+        """Load params from GCS hyperparam snapshot; fall back to VersionConfig defaults.
+
+        Snapshots written before LightGBM/MLP were added won't contain those
+        keys. Missing keys are filled from the module defaults so new models
+        always have valid starting params without requiring a snapshot re-write.
+        """
+        defaults = {
+            "LogisticRegression": dict(DEFAULT_LR_PARAMS_),
+            "RandomForest": dict(DEFAULT_RF_PARAMS_),
+            "XGBoost": dict(DEFAULT_XGB_PARAMS_),
+            "LightGBM": dict(DEFAULT_LGB_PARAMS_),
+            "MLP": dict(DEFAULT_MLP_PARAMS_),
+        }
         try:
             stored = load_hyperparams(config.hyperparam_version)
             print(
                 f"Loaded hyperparams from snapshot '{config.hyperparam_version}'."
             )
+            params = stored["params"]
             # elasticnet requires l1_ratio but older snapshots omitted it from
             # the tuning grid. Inject a balanced default so the model can fit.
-            lr_params = stored["params"].get("LogisticRegression", {})
+            lr_params = params.get("LogisticRegression", {})
             if lr_params.get("penalty") == "elasticnet" and "l1_ratio" not in lr_params:
                 lr_params["l1_ratio"] = 0.5
-                stored["params"]["LogisticRegression"] = lr_params
+                params["LogisticRegression"] = lr_params
                 print("  Note: injected l1_ratio=0.5 for elasticnet LR (missing from snapshot).")
-            return stored["params"]
+            # Fill any keys absent from the snapshot (e.g. new models added after
+            # the snapshot was written) with module defaults.
+            for key, default_val in defaults.items():
+                if key not in params:
+                    params[key] = default_val
+                    print(f"  Note: '{key}' not in snapshot — using defaults.")
+            return params
         except FileNotFoundError:
             print(
                 f"No hyperparams snapshot for '{config.hyperparam_version}' — "
                 "using VersionConfig defaults."
             )
-            return {
-                "LogisticRegression": dict(DEFAULT_LR_PARAMS_),
-                "RandomForest": dict(DEFAULT_RF_PARAMS_),
-                "XGBoost": dict(DEFAULT_XGB_PARAMS_),
-            }
+            return defaults
 
     def _tune(
         self,
@@ -234,18 +278,25 @@ class ModelTrainerLogic:
                     random_state=RANDOM_SEED_, n_jobs=-1, eval_metric="logloss"
                 ),
             ),
+            (
+                "LightGBM",
+                LGBMClassifier(random_state=RANDOM_SEED_, n_jobs=-1, verbose=-1),
+            ),
+            (
+                "MLP",
+                MLPClassifier(random_state=RANDOM_SEED_, early_stopping=True),
+            ),
         ]
 
         # Restrict the search to an explicit subset when the notebook asked for
         # it (config.tune_model_names). Models left out keep their loaded params,
         # so a tuning run can target only the top models without re-searching the
         # rest. None means tune every candidate.
+        all_names = [c for c, _ in candidates]
         selected = config.tune_model_names
         if selected is not None:
             candidates = [(c, m) for c, m in candidates if c in selected]
-            skipped = [c for c, _ in [
-                ("LogisticRegression", None), ("RandomForest", None), ("XGBoost", None)
-            ] if c not in selected]
+            skipped = [c for c in all_names if c not in selected]
             print(f"Tuning subset: {[c for c, _ in candidates]} "
                   f"(keeping loaded params for {skipped})")
 
@@ -258,13 +309,17 @@ class ModelTrainerLogic:
                 f"{'Using overriden param_grid via new_grids=' if config.new_grids.get(model_cls) else ''}"
             )
             print(f"Using param_grid: {param_grid}")
+            n_iter = config.search_n_iter
+            if model_cls == "MLP" and n_iter > MLP_MAX_N_ITER_:
+                print(f"  MLP: capping n_iter {n_iter} -> {MLP_MAX_N_ITER_} (no within-model parallelism)")
+                n_iter = MLP_MAX_N_ITER_
             result = tune_model(
                 base_model,
                 X_train,
                 y_train,
                 param_grid=param_grid,
                 search_strategy=config.search_strategy,
-                n_iter=config.search_n_iter,
+                n_iter=n_iter,
                 cv=config.search_cv,
                 scoring=config.search_scoring,
                 random_state=RANDOM_SEED_,

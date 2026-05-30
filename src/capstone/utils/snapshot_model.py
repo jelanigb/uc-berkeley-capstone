@@ -55,7 +55,10 @@ class ModelType(str, Enum):
     XGB = "XGBoost"
     LR = "LogisticRegression"
     RF = "RandomForest"
+    LGB = "LightGBM"
+    MLP = "MLP"
     ENSEMBLE_VC = "VotingClassifier"
+    ENSEMBLE_STACKING = "StackingClassifier"
 
 
 # =========================================================================
@@ -237,6 +240,55 @@ class ModelConfig:
         )
 
     @classmethod
+    def for_lightgbm(cls, model):
+        """Extract config from a fitted LGBMClassifier."""
+        return cls(
+            model_type="LightGBM",
+            hyperparameters={
+                "n_estimators": model.n_estimators,
+                "max_depth": model.max_depth,
+                "learning_rate": model.learning_rate,
+                "num_leaves": model.num_leaves,
+                "min_child_samples": model.min_child_samples,
+                "subsample": model.subsample,
+                "colsample_bytree": model.colsample_bytree,
+            },
+        )
+
+    @classmethod
+    def for_mlp(cls, model):
+        """Extract config from a fitted MLPClassifier."""
+        return cls(
+            model_type="MLP",
+            hyperparameters={
+                "hidden_layer_sizes": list(model.hidden_layer_sizes),
+                "activation": model.activation,
+                "alpha": model.alpha,
+                "learning_rate_init": model.learning_rate_init,
+                "max_iter": model.max_iter,
+                "early_stopping": model.early_stopping,
+            },
+        )
+
+    @classmethod
+    def for_stacking_ensemble(cls, model):
+        """Extract config from a fitted StackingClassifier.
+
+        Stores estimator names, meta-learner type, and CV folds. The nested
+        estimator objects are not stored (not JSON-serializable). Feature
+        importances are not available for this model type since the meta-learner's
+        coefficients are over base-model probability outputs, not original features.
+        """
+        return cls(
+            model_type="StackingClassifier",
+            hyperparameters={
+                "estimators": [name for name, _ in model.estimators],
+                "final_estimator": type(model.final_estimator).__name__,
+                "cv": model.cv,
+            },
+        )
+
+    @classmethod
     def for_voting_ensemble(cls, model):
         """Extract config from a fitted VotingClassifier.
 
@@ -263,6 +315,12 @@ class ModelConfig:
             return cls.for_random_forest(model)
         elif class_name == 'XGBClassifier':
             return cls.for_xgboost(model)
+        elif class_name == 'LGBMClassifier':
+            return cls.for_lightgbm(model)
+        elif class_name == 'MLPClassifier':
+            return cls.for_mlp(model)
+        elif class_name == 'StackingClassifier':
+            return cls.for_stacking_ensemble(model)
         elif class_name == 'VotingClassifier':
             return cls.for_voting_ensemble(model)
         else:

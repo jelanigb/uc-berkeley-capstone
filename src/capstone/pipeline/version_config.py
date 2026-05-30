@@ -83,6 +83,16 @@ DEFAULT_XGB_PARAMS_ = {
     'n_estimators': 500, 'max_depth': 6, 'learning_rate': 0.1,
     'subsample': 0.8, 'colsample_bytree': 0.8, 'min_child_weight': 5,
 }
+DEFAULT_LGB_PARAMS_ = {
+    'n_estimators': 500, 'max_depth': -1, 'learning_rate': 0.1,
+    'num_leaves': 31, 'min_child_samples': 20, 'subsample': 0.8,
+    'colsample_bytree': 0.8,
+}
+DEFAULT_MLP_PARAMS_ = {
+    'hidden_layer_sizes': (128, 64), 'activation': 'relu', 'alpha': 0.001,
+    'learning_rate_init': 0.001, 'max_iter': 500,
+    # early_stopping is hardcoded True in ModelTrainer; not stored here
+}
 DEFAULT_ENSEMBLE_PARAMS_ = {
     'voting': 'soft',
 }
@@ -729,6 +739,12 @@ class VersionConfig:
         "xgb": "XGBoost",
         "xgboost": "XGBoost",
         "xgbclassifier": "XGBoost",
+        "lgb": "LightGBM",
+        "lgbm": "LightGBM",
+        "lightgbm": "LightGBM",
+        "lgbmclassifier": "LightGBM",
+        "mlp": "MLP",
+        "mlpclassifier": "MLP",
     }
 
     @classmethod

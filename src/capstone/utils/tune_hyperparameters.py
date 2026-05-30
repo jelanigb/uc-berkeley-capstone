@@ -56,6 +56,23 @@ _PARAM_GRIDS = {
         "min_child_weight":  [1, 3, 5, 10],
         "gamma":             [0, 0.1, 0.3, 0.5],
     },
+    "LGBMClassifier": {
+        "n_estimators":      [100, 200, 300, 500],
+        "max_depth":         [-1, 5, 8, 12],       # -1 = no limit (LGB default)
+        "learning_rate":     [0.01, 0.05, 0.1, 0.2],
+        "num_leaves":        [15, 31, 63, 127],
+        "min_child_samples": [5, 10, 20, 50],
+        "subsample":         [0.6, 0.7, 0.8, 1.0],
+        "colsample_bytree":  [0.6, 0.7, 0.8, 1.0],
+    },
+    "MLPClassifier": {
+        "hidden_layer_sizes": [(64,), (128,), (64, 64), (128, 64), (256, 128)],
+        "activation":         ["relu", "tanh"],
+        "alpha":              [0.0001, 0.001, 0.01, 0.1],
+        "learning_rate_init": [0.0001, 0.001, 0.01],
+        "max_iter":           [300, 500],
+        # early_stopping is always True in training; not searched
+    },
 }
 
 _STRATEGY_MAP = {
