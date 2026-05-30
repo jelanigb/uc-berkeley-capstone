@@ -396,7 +396,7 @@ def save_model(
     for filename in ['model.pkl', 'scaler.pkl', 'feature_cols.json', 'metadata.json']:
         local_path = f"{model_dir}/{filename}"
         blob = bucket.blob(f"models/{version_tag}/{filename}")
-        blob.upload_from_filename(local_path)
+        blob.upload_from_filename(local_path, timeout=600)
         print(f"  Uploaded gs://{BUCKET_NAME}/models/{version_tag}/{filename}")
 
     # Print summary
