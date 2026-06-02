@@ -164,7 +164,8 @@ help.**
 - **Re-target the tier=S gap with signal-preserving methods** instead of
   data-partitioning, in rough order of promise:
   1. **Sample weighting / oversampling S inside the global model** — keeps all
-     19,589 rows and the cross-tier transfer while up-weighting S.
+     19,589 rows and the cross-tier transfer while up-weighting S. *(Tried — also
+     a negative result; see §9.)*
   2. **Per-tier threshold tuning** — will not move AUC (rank-based) but can improve
      S's precision/recall trade-off at deployment.
   3. **Robust low-volume features** — encode baseline *reliability* for channels
@@ -205,3 +206,57 @@ pollutes the cross-version trajectory plots.
   (run, model). Reconstruct a router from a saved run with
   `modeling.tier_routing.TierRoutedClassifier` plus the manifest's feature order
   and `scaler.pkl`.
+
+---
+
+## 9. Follow-up: tier=S sample weighting (also rejected)
+
+**Date:** 2026-06-02
+**Status:** ❌ Negative result — does not improve tier=S.
+**Code:** [`modeling/tier_weighting.py`](../src/capstone/modeling/tier_weighting.py),
+tests [`tests/tier_weighting_test.py`](../tests/tier_weighting_test.py), notebook 03
+*"Tier=S sample weighting (exploratory)"* section.
+
+§6 proposed sample weighting as the signal-preserving alternative to the split:
+clone each v6.2 global, refit on **all** 19,589 rows (volume + cross-tier transfer
+intact) but pass a `sample_weight` that up-weights tier=S. The result is a single
+global model — no routing — so it is directly comparable to the v6.2 globals. We
+swept S-weight multipliers {2, 3, 5} for XGB / LGB / stacking.
+
+### Result
+
+Tier=S AUC is flat-to-worse at every weight, while global AUC falls monotonically:
+
+| family | tier=S AUC (x1 -> x2 -> x3 -> x5)    | global AUC (x1 -> x5) |
+|--------|--------------------------------------|-----------------------|
+| xgb    | 0.8821 -> 0.8808 -> 0.8784 -> 0.8801 | 0.9200 -> 0.9140      |
+| lgb    | 0.8811 -> 0.8805 -> 0.8797 -> 0.8809 | 0.9188 -> 0.9138      |
+| stack  | 0.8829 -> 0.8804 -> 0.8783 -> 0.8786 | 0.9201 -> 0.9140      |
+
+The segment auditor's tier=S "drop" *shrinks* at higher weights (e.g. xgb
+0.0379 → 0.0338), but this is misleading: the gap closes because the **global
+ceiling falls to meet S**, not because S rises. Lowering the top is the opposite
+of the goal — the pooled table is the metric that matters.
+
+### Why it can't help
+
+`sample_weight` changes *which errors the loss penalizes* (shifting the decision
+boundary / class emphasis for S), but **ROC-AUC is rank-based and
+threshold-independent** — emphasizing S rows does not make their signal more
+separable. The threshold-dependent check agrees: tier=S **accuracy** is also flat
+(xgb 0.7965 → 0.7913 → 0.7959 → 0.7881), so there is no operating-point benefit
+either.
+
+### Combined conclusion
+
+Two model-side interventions have now failed for the same underlying reason — the
+**per-tier split** (§1–6: less data + lost cross-tier transfer) and **sample
+weighting** (§9: full data, but reweighting can't manufacture separability).
+Together they establish that **tier=S ≈ 0.882 is an intrinsic ceiling**: the
+limitation lives in the data/signal for small channels (sparse baseline history,
+noisy normalized rates), not in how the model allocates capacity or attention.
+
+**Remaining options:** (a) **feature-side** — encode baseline *reliability* for
+low-volume channels, the apparent root cause; or (b) **accept** ~0.882 as the
+floor, which is a defensible project conclusion given two failed model-side fixes.
+No further model-side reweighting/partitioning is worth pursuing.
