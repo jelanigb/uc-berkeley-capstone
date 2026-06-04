@@ -167,13 +167,11 @@ On the locked, in-distribution validation set (5,192 videos, model version **v6.
 
 The four strongest models finish **within ~0.003 ROC-AUC of one another** — a near-tie well inside run-to-run noise.
 
-![Precision and recall by model family on the locked validation set.](./images/results/precision_recall_by_model.png)
-
 ![ROC curves for the leading model candidates on the locked validation set — true-positive vs. false-positive rate across all thresholds.](./images/results/roc_auc_curve.png)
 
 ![Accuracy by model family on the locked validation set.](./images/results/accuracy_by_model.png)
 
-##### **What the model learned — and why it validates the project's core bet.**
+## **What the model learned — and why it validates the project's core bet.**
 
 Across XGBoost, LightGBM, and Random Forest the dominant predictor is **`like_rate_24h`** (likes-per-hour at the 24-hour mark) — the cleanest early-momentum signal — followed by channel-context features: baseline video count, subscriber tier, and baseline-normalized view/like ratios. The progression of feature importance across versions tells the story: the earliest models leaned on **raw counts**; the mature models lean on **channel-relative, normalized signals**. In plain terms: *how a video is doing relative to its own channel's norm, in the context of what kind of channel it is*, beats any absolute engagement number. That is precisely the design philosophy the project was built around.
 
@@ -254,7 +252,9 @@ Additional technical documentation and project documentation can be found in the
 
 #### **Engineering & Code Organization**
 
-Beyond the modeling, this project was a substantial engineering effort: **over 7.3k lines of Python code in production across 40 modules** (excluding the analysis notebooks, blank lines, and comments). The two largest components are the **data-collection services** (~1,450 lines) that harvest the longitudinal dataset, and the **modeling pipeline** (~3,140 lines) that turns it into versioned results.
+Beyond the modeling, this project was a substantial engineering effort: **over 7.3k lines of Python code across 40 modules, deployed to production** (excluding the analysis notebooks, blank lines, and comments). The two largest components are the **data-collection services** (~1,450 lines) that harvest the longitudinal dataset, and the **modeling pipeline** (~3,140 lines) that turns it into versioned results.
+
+The code is backed by **215 unit tests across 13 test modules** (~1,700 lines), run as a gate before every push to the repository. Coverage is concentrated on the correctness-critical logic — data cleaning, feature engineering, the train/test/validation splitter, snapshotting, and the tier-modeling experiments — rather than the thin I/O wrappers; roughly 40% of modules have a dedicated test module, weighted toward the parts where a silent bug would corrupt results.
 
 Analysis and decision-making happens in modular, purpose-built [notebooks](notebooks/) that share state through versioned GCS Parquet snapshots rather than passing DataFrames in memory — keeping implementation code separate from the write-up, letting each stage re-run independently, and managing performance (early tuning runs exceeded 30 minutes). The underlying package implements a `PipelineRun` dataclass (typed state carrier), a `PipelineFactory` (assembles stages per scenario), and stage classes for loading, preprocessing, feature engineering, splitting, scaling, augmentation, training, validation, and snapshotting. The data-collection services (`harvester`, `baselines`, `discovery`, `validation`) run as separate services in GCP, fully decoupled from the modeling pipeline. Every model artifact and data snapshot is versioned semantically (e.g. `v6.2`) and stored in GCS for reproducibility.
 
