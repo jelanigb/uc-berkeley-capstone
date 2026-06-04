@@ -1,185 +1,246 @@
-# UC Berkeley Professional Certificate in Machine Learning and Artificial Intelligence \- Capstone Project
+# UC Berkeley Professional Certificate in Machine Learning and Artificial Intelligence — Capstone Project
 
 ## Repository Summary
 
-This is my Capstone Project for the 6-month "Professional Certificate in Machine Learning and Artificial Intelligence" program. The program includes instruction from the UC Berkeley School of Engineering and UC Berkeley Haas School of Business.
+This is my Capstone Project for the 6-month UC Berkeley ["Professional Certificate in Machine Learning and Artificial Intelligence"](https://em-executive.berkeley.edu/professional-certificate-machine-learning-artificial-intelligence) program. The program includes instruction from the UC Berkeley School of Engineering and the UC Berkeley Haas School of Business.
+
+
+
+
+# Predicting Early YouTube Engagement Relative to a Channel's Own Baseline
+
+**Author:** Jelani Gould-Bailey
+
+## **Executive Summary**
+
+When a creator publishes a YouTube video, the first 24 hours are very important. But it is genuinely hard to know, that early, whether the video is on track to do well *for that channel*. This project answers a focused version of that question: **can we predict, using only signals available at upload time and in the first 24 hours, whether a video will beat its own channel's recent engagement track record (median) over its first 7 days?**
+
+The answer is a confident **yes**. Using a custom-built data-collection system running on Google Cloud, I continuously harvested **over 32,000 complete, week-long video histories** — each video observed at three separate points in its life (upload, 24 hours, 7 days) — across **1,375 channels** spanning content categories and audience sizes from 1,000 to 10 million subscribers. On this data I trained and compared **seven different model families** across **51 versioned model snapshots**, with extensive cross-validation and hyperparameter search.
+
+The best model — **XGBoost** — correctly ranks above- vs. below-baseline videos at **0.92 ROC-AUC** on held-out data (where 0.50 is random guessing and 1.0 is perfect), at roughly **84% accuracy**. Critically, when tested on two entire content categories it had *never seen during training* (Music and Sports), it still scored **~0.88 ROC-AUC** — strong evidence it learned something genuine and transferable about early engagement, not just quirks of the categories it trained on.
+
+The single most important predictor turned out to be exactly what the project's design philosophy bet on: **early engagement measured relative to the channel's own norm** (likes-per-hour at the 24-hour mark, normalized against the channel's history and size) is far more predictive than any raw view or like count. The headline business takeaway is that a video's 7-day fate is, to a meaningful and measurable degree, **already visible within 24 hours** — and it is visible in *relative*, channel-aware signals, not absolute popularity.
+
+![ROC-AUC progression across every model generation, one line per model family. The dashed vertical line marks the move to a single locked validation set, after which version-to-version comparisons are exact.](./images/results/roc_auc_by_version_line.png)
 
 ---
 
-## Capstone Project
+## **Rationale — Why this matters**
 
-## **Author:** Jelani Gould-Bailey
+**For individual creators**, the 24 hours after upload are a narrow, high-stakes window. If a video is not gaining traction, there is still time to act — refine the title, swap the thumbnail, push it through community posts or social media, or decide to re-upload at a better time. An early, reliable signal of *"this video is tracking below your usual performance"* turns that window from a guess into a decision.
 
-#### **Executive Summary**
+**For a video platform**, the same early signal is valuable in aggregate: it can inform how aggressively to seed a video into recommendations, power creator-facing analytics and coaching tools, and feed longer-term audience-retention forecasting.
 
-This project investigates whether a YouTube video's engagement performance — measured relative to that channel's own historical baseline — can be reliably predicted within the first 24 hours of publication using only publicly observable signals. Using a custom-built data collection pipeline running on Google Cloud Platform, I assembled a dataset of over 17,000 complete video snapshots at upload, 24h and 7d intervals. These videos were sourced from 974 channels spanning three content verticals (Education, Lifestyle, Tech) and three subscriber tiers. Three classifier families were trained and evaluated across five model generations: Logistic Regression with L1 regularization, Random Forest, and XGBoost. The final XGBoost model achieved **0.908 ROC-AUC** on a locked holdout validation set. The \~15-point ROC-AUC performance gap separating it from Logistic Regression demonstrates that YouTube engagement dynamics are fundamentally non-linear: driven by threshold effects (e.g. the abrupt behavioral cliff between YouTube Shorts and standard videos at the 60-second duration boundary) and channel-contextual interactions (e.g. a 5% 24-hour like rate signaling very different things for a 10K-subscriber channel than for a 1M-subscriber channel) that a linear model cannot capture regardless of tuning.
-
----
-
-#### **Rationale**
-
-For individual YouTube creators, the 24 hours immediately following a video upload are critical. If a video is not gaining traction early, there is often a narrow window to act — adjusting the title, updating the thumbnail, pushing the video in community posts or on social media, or deciding to re-upload. 
-
-For a video platform, early engagement prediction can inform recommendation seeding, creator support tooling, and long-term retention forecasting. A model that flags — within the first 24 hours — whether a video is likely to underperform relative to a creator's own historical baseline is immediately actionable for both the creator and the platform, giving an early indication of where engagement will land in 7d. 
-
-The core design choice this project — benchmarking against a *channel's own* historical median rather than a global threshold — makes this problem meaningful across the full spectrum of creator sizes. A 5,000-subscriber education channel and a 5-million-subscriber tech channel face completely different engagement landscapes; a global threshold would be uninformative for one of them. By design, 50% of any channel's videos will land above its own median, which also eliminates class imbalance as a modeling concern from the outset.
+The defining design choice — and the thing that makes this useful across the *entire* spectrum of creators — is that every video is judged against **its own channel's recent history**, not against a single global popularity threshold. A 5,000-subscriber education channel and a 5-million-subscriber tech channel live in completely different engagement worlds; a one-size-fits-all threshold would be meaningless for one of them. Benchmarking each video against its own channel's median makes the prediction relevant to a brand-new small creator and an established media brand alike. As a bonus, this framing is **naturally balanced** — by definition roughly half of any channel's videos land above its own median — so we did not have to wrestle with class imbalance.
 
 ---
 
-#### **Research Question**
+## **Research Question**
 
 *Can we predict whether a YouTube video will achieve above-median engagement within 7 days of publication, using only signals observable at upload time or within the first 24 hours?*
 
-Engagement is defined as `(likes + comments) / views` at the 7-day mark, benchmarked against that channel's own historical median computed from its 30 most recent prior videos.
+Engagement is defined as `(likes + comments) / views` measured at the 7-day mark, and "above-median" is benchmarked against **that channel's own historical median**, computed from its 30 most recent prior videos (excluding videos used in training). 
+
+This is a **supervised binary classification** problem: the model outputs a probability that a freshly uploaded video will beat its channel's baseline.
 
 ---
 
-#### **Data Sources**
+## **Data Sources**
 
-All data is collected via the YouTube Data API v3 (free tier). Rather than relying on existing Kaggle datasets — which lack the time-series structure and channel-level baseline data this problem requires — I built a custom harvesting pipeline from the ground up.
+All data was collected directly from the **YouTube Data API v3** (free tier). Off-the-shelf datasets (e.g. on Kaggle) were unusable for this question for two structural reasons: (1) they lack **time-series snapshots of the same video** at multiple ages, and (2) the **per-channel baseline history** the target is defined against. The YouTube API only ever returns a *current* snapshot of a video — there is no historical record to download — so the only way to obtain a video's trajectory over its first week is to **poll it repeatedly over that week.** That requirement drove the central engineering decision of the project: building a continuous, longitudinal collection system from scratch.
 
-**Why custom collection?** The central design challenge is that predicting whether a video beats its own channel's historical median requires two things unavailable in any pre-built dataset: (1) time-series snapshots of the *same video* at multiple points in time, and (2) a channel baseline built from the channel's recent upload history. Calls to the YouTube API will return a current snapshot of data for any given video\_id; there are no publicly available APIs to track performance over time. Because this project required tracking metric changes over time, a custom tracking pipeline was built.
+**Channel selection.** Channels were discovered via keyword searches (20 curated queries per content vertical), filtered by subscriber count into three **tiers** — **S** (1K–100K), **M** (100K–1M), **L** (1M–10M) — and screened for a minimum upload velocity (≈ 0.5–1.0 videos/week) so enough data would accrue during the collection window. Each channel is validated before entering the tracking pool, and a candidate buffer in BigQuery ensures an API-quota crash mid-run never loses already-validated channels.
 
-**Channel selection.** Channels were discovered using keyword searches across 20 curated search queries per vertical, filtered by subscriber count into three tiers (S: 1K–100K, M: 100K–1M, L: 1M–10M), and screened for minimum upload velocity (at least 0.5–1.0 videos per week, depending on tier) to ensure sufficient data accrual during the data collection period. Each channel is validated before being added to the tracking pool, and a candidate buffer table in BigQuery prevents quota crashes from losing discovered channels mid-run.
+**Baseline data (the benchmark).** When a channel is onboarded, the pipeline pulls its **30 most recent prior videos** and records key statistics to compute that channel's median engagement rate, views, likes, and comments. This happens **once, at onboarding, before any of that channel's videos enter tracking** — so no tracked video can ever contaminate its own benchmark (and there is an explicit gaurdrail in the code to exclude video IDs that are in the longitudinal tracking table). The final baseline dataset spans **40,841 baseline videos across 1,375 channels**.
 
-**Baseline data.** When a channel is first onboarded, the pipeline collects the 30 most recent videos from that channel's upload history via the YouTube API's `playlist` endpoint and records their lifetime statistics. These videos become the basis for computing per-channel median engagement rate, median views, median likes, and median comments. This baseline collection happens *once at onboarding*, before any videos from that channel enter the tracking pool, ensuring no tracked video can influence its own benchmark.
+**Three-snapshot design.** Every tracked video produces exactly three labeled snapshots — `upload` (within ~6 hours of publishing), `24h` (20–30 hours later), and `7d` (156–180 hours later). Only videos observed at **all three** points (a "complete triplet") are usable, because the growth-rate features need all three. The `7d` snapshot provides the answer key (the target); the `upload` and `24h` snapshots provide the inputs. This design *physically enforces* the prediction constraint — no information from beyond 24 hours can leak into the features. At each snapshot the harvester also downloads the thumbnail and extracts computer-vision features (brightness, colorfulness, face presence) with OpenCV, and records YouTube's AI-generated-media flag to allow AI-generated content to be identified / filtered out.
 
-**Three-snapshot design.** Each tracked video produces exactly three labeled snapshots — `upload` (within 6 hours of publish), `24h` (between 20–30 hours post-publish), and `7d` (between 156–180 hours post-publish) — stored as rows in a `video_snapshots` table in BigQuery. Only videos with all three snapshots (a "complete triplet") are used for modeling. The `7d` snapshot provides the ground truth for the target variable; the `upload` and `24h` snapshots provide the features. This design enforces the prediction constraint: no information from beyond 24 hours is available as input to the model. At each snapshot, in addition to engagement metrics, the harvester downloads the video thumbnail and extracts computer vision features (brightness, colorfulness, face detection) using OpenCV.
+**Scale of the collected data (final snapshot `v3.5_real`):**
 
-**Pipeline architecture.** A data harvester script polls the API  every 3 hours, scanning all tracked channels for new videos and recording upload snapshots. Those same videos are tracked for 24-hour and 7-day follow-up polls. A nightly baseline polling script onboards newly discovered channels and computes their historical medians. 
+| Stage | Volume |
+| :---- | :---- |
+| Raw poll rows harvested | **106,626** |
+| Videos with all three snapshots complete (modelable) | **32,571** |
+| Final modeling rows (after baseline-join + cleaning) | **32,126** |
+| Channel baselines | 40,841 videos / **1,375 channels** |
 
-**Scale.** The dataset spans 974 channels across 3 content verticals and 3 subscriber tiers. The channels are spread across tiers in the following distribution for each vertical: 75 L, 100 M, 150 S. For the lifestyle vertical there was a duplicate channel detected during analysis, resulting in 974 total distinct channels. 
+So **over 30,000 fully observed, week-long video trajectories** underpin every result below — each one the product of multiple timed API polls rather than a one-shot scrape, accruing at roughly **~300 new videos/day across ~970+ actively tracked channels** for months.
 
 ---
 
-#### **Methodology**
+## **Methodology**
 
-##### **Problem Statement**
+This section covers both the **data-science methodology** (how the modeling was done) and the **engineering** that made it possible (how the data was harvested and managed at scale).
 
-This is a **supervised binary classification** problem. The target variable, `above_baseline`, is 1 if a video's 7-day engagement rate `(likes + comments) / views` exceeds that channel's historical median engagement rate, and 0 otherwise. Benchmarking against the channel's own median is a deliberate design choice that naturally balances the classes — by definition, roughly 50% of a channel's videos exceed its own median — and makes the model applicable across channels of any size without requiring a global engagement threshold.
+#### **The data-harvesting engineering**
 
-The prediction constraint is strict: only signals observable at upload time or within the first 24 hours may be used as features. Any metric derived from 7-day data is excluded from the feature set to prevent data leakage.
+The dataset is not a static download — it is the output of a **purpose-built, always-on collection system on Google Cloud.** Four independent Cloud Run services cooperate:
 
-##### **Data Preprocessing and Preparation**
+| Service | Role |
+| :---- | :---- |
+| **discovery** | Finds channels to track, tier-aware by subscriber size, with upload-velocity filtering and a candidate buffer so a quota crash never loses validated channels. |
+| **harvester** | The core engine. Runs **every 3 hours**, scans tracked channels for new uploads, and polls each video at its three life stages — writing one snapshot row each. Captures views/likes/comments, subscriber count at poll time, thumbnail CV features, duration, category, description, and the AI-media flag. |
+| **baselines** | Gathers each channel's last ~30 lifetime videos to compute the channel-relative baseline medians the target is defined against — explicitly excluding any already-tracked video to prevent leakage. |
+| **validation** | A health monitor that checks completion rates across all three poll stages and flags gaps. |
 
-Raw data arrives in long format from BigQuery — up to three rows per video, one per snapshot label. Preprocessing follows three steps: **pivoting** from long to wide format (dropping any video that does not have all 3 poll labels), **joining channel baseline medians** from a separate baseline table onto each video record, and **structural cleanup** — whitespace normalization, negative value clamping, and tag field normalization.
+This is genuinely **longitudinal** data engineering: a single usable row only exists once a video has been observed at all three points spanning a full week, on top of careful YouTube API quota management (retries disabled, consecutive-error bail-out, per-run quota accounting).
 
-The final modeling table uses a stratified split on `vertical × tier × above_baseline` (18 cells) to ensure all segments are represented proportionally in every partition. Starting with model generation v4.0, a **30% holdout validation set** was created once and locked — with its video IDs persisted to GCS — to enable apples-to-apples comparisons across all subsequent model versions. The remaining 70% is split 80/20 into training and test sets at each run. All features are standardized using `sklearn`'s `StandardScaler` fit on the training set and applied to all splits.
+#### **Problem framing & leakage control**
 
-Early model generations (v1.0–v3.1) used synthetic data augmentation via SDV's `GaussianCopulaSynthesizer` to supplement limited real data. Synthetic rows were assigned to real channel IDs (inheriting that channel's actual baseline medians to produce realistic target labels) and appended to the training split only — never to validation or test. Starting with v4.0, the real dataset was large enough to train exclusively on real data.
+The target, `above_baseline`, is `1` if a video's 7-day engagement rate exceeds its channel's historical median and `0` otherwise. The classes are naturally near-balanced (**~55% above / ~45% below**), so the modeling challenge is *ranking quality*, not imbalance. The prediction constraint is strict: **only upload-time and 24-hour signals may be used as features** — any quantity derived from 7-day data is excluded to prevent leakage, and a correlation-based leakage check (notebook 02) confirms no 7-day information slips in.
 
-##### **Feature Engineering**
+#### **Data preparation**
 
-The project evolved through multiple distinct feature generations, growing from 39 to 53 columns. Features fall into six categories.
+Raw data arrives "long" (up to three rows per video). Preparation is three structural steps — **pivot** long→wide (dropping any video missing a poll), **join** the per-channel baseline medians, and **clean** (whitespace normalization, negative-value clamping, tag normalization). The project **does not impute**: incomplete records are dropped at the stage that introduces the gap, because they are structurally — not randomly — missing.
 
-**Engagement velocity and acceleration** capture how quickly views and likes are accumulating in the first 24 hours. This includes raw upload-to-24h velocity (`view_count_velocity_24h`, `like_count_velocity_24h`), upload-time momentum (`view_velocity_upload`, `like_velocity_upload`), subscriber-normalized velocity to remove channel-size bias (`view_velocity_per_sub_24h`), a velocity ratio expressing momentum relative to the channel's typical view count (`view_velocity_ratio`), and second-order acceleration features (`view_velocity_acceleration`, `like_velocity_acceleration`).
+The modeling table is split with **stratification on an 18-cell `vertical × tier × above_baseline` key**, so every segment is represented proportionally in every partition. Starting at model generation v4.0, a **30% holdout validation set was created once and locked** (its video IDs persisted to cloud storage) so that *every* later version is scored on the identical set — making cross-version comparison exact rather than an artifact of a lucky re-split. The remaining data is split 80/20 into train/test each run, and all features are standardized with a scaler fit only on the training split.
 
-**Baseline comparison features** (`view_count_upload_vs_baseline`, `like_count_upload_vs_baseline`) express a video's early metrics relative to the channel's own historical median — capturing whether early performance is tracking above or below what that channel typically sees at the same point in a video's lifecycle.
+> Early generations (v1.0–v3.1) supplemented limited real data with **synthetic augmentation** (SDV's `GaussianCopulaSynthesizer`), added to the *training split only*, in order to give those models enough data to adequately train. Once the real dataset was large enough (v4.0+), training switched to **100% real data**.
 
-**Normalized engagement rates** (`like_rate_upload`, `like_rate_24h`) express likes as a fraction of views, removing the influence of channel size that raw like counts carry. These features, introduced in v3.1, produced the largest single-generation model improvement in the project.
+#### **Feature engineering**
 
-**Content and metadata features** include video duration (`duration_seconds`, `is_short`, `is_long`, `duration_bucket`), title and description pattern categories encoded as ordinal integers from a priority-ordered classification scheme (e.g., question, listicle, clickbait, neutral), text structural metrics (title length, word count, tag count, description link and hashtag counts), thumbnail features (brightness, colorfulness, face presence as a binary flag), and temporal features (publish hour, day of week, weekend flag).
+Raw counts are heavily right-skewed and not comparable across channels of different sizes (see EDA below). Feature engineering converts them into **scale-invariant, channel-relative signals** that are both more predictive and more linearly separable. The set grew across generations to **55 model-ready features** in six families:
 
-**Subscriber-normalized metrics** (`views_per_sub_upload`, `likes_per_sub_24h`, etc.) allow fair comparison of engagement volume across channels with very different audience sizes.
-
-**Segment encodings**, added in v4.0, include `tier_encoded` (ordinal: S=0, M=1, L=2) and one-hot vertical indicators (`vertical_Education`, `vertical_Lifestyle`, `vertical_Tech`). These proved to be among the strongest predictors in the final model.
-
-Three features present in v1.0 were removed through iterative cleanup: `face_count` (replaced by the more reliable binary `has_face`), `hours_since_publish_upload` (identified as a harvester timing artifact, not a content signal), and `duration_minutes` (redundant with `duration_seconds`).
+- **Engagement velocity & acceleration** — how fast views/likes accumulate in the first 24h, including subscriber-normalized and ratio-to-channel-norm variants.
+- **Baseline-comparison features** — early metrics expressed relative to the channel's own historical median.
+- **Normalized engagement rates** — likes/comments as a fraction of views (introduced in v3.1; the single largest model improvement in the project).
+- **Content & metadata** — duration, `is_short`/`is_long`, title/description pattern categories, text-structure metrics, thumbnail CV features, and publish-time features.
+- **Subscriber-normalized metrics** — for fair comparison across very different audience sizes.
+- **Segment encodings** — `tier_encoded` and one-hot vertical indicators (among the strongest predictors).
 
 ##### **Modeling**
 
-Three classifier families were selected to span the interpretability–performance tradeoff.
+Seven model families were trained and compared, spanning the interpretability ↔ performance trade-off:
 
-**Logistic Regression with L1 regularization** serves as the interpretable baseline. Its coefficients are directly readable as feature weights, and L1 regularization performs implicit feature selection by zeroing out low-signal features. Its performance ceiling is limited structurally by its inability to capture non-linear feature interactions.
+- **Logistic Regression (L1/ElasticNet)** — the interpretable, linear baseline.
+- **Random Forest** and **XGBoost** — non-linear tree models with feature-importance rankings.
+- **LightGBM** — a second gradient-boosting implementation (an independent cross-check on XGBoost).
+- **MLP** — a small neural network.
+- **Voting ensemble** (RF + XGB, soft vote) and a **Stacking ensemble** (RF + XGB + LGB → logistic meta-learner, 5-fold CV).
 
-**Random Forest** handles non-linear relationships and categorical variables naturally, provides feature importance rankings via impurity reduction, and is robust to outliers and correlated features. It is itself an ensemble of decision trees, so its variance is lower than a single tree at the cost of interpretability.
+Hyperparameters were tuned with **`RandomizedSearchCV` (100 iterations × 5-fold cross-validation, ROC-AUC scoring)** on the leading candidates — thousands of underlying fits. Across the full project this amounts to **51 versioned model snapshots over 13 versions**, with v4.0+ versions all scored on the same locked holdout. All artifacts — data snapshots, models, scalers, feature lists, hyperparameters, and validation results — are versioned and stored in GCS for reproducibility.
 
-**XGBoost** (gradient-boosted trees) provides the strongest predictive performance. It builds trees sequentially, with each tree correcting residuals from the prior, and applies built-in L1/L2 regularization. Both RF and XGB are used to generate feature importance rankings.
+##### **Evaluation metric — and why**
 
-A **VotingClassifier ensemble** combining RF and XGB (soft voting, weights 1:2 in favor of XGB) was also evaluated. While RF and XGB are each already ensemble methods internally, combining them tests whether the two model families capture complementary signal. The near-zero gain from ensembling (XGB 0.908 vs. Ensemble 0.905 on the validation set) confirmed they are largely capturing the same patterns, supporting XGBoost as the primary model for ongoing work rather than the more complex ensemble.
-
-Hyperparameter tuning was performed using `RandomizedSearchCV` (100 iterations, 5-fold CV, ROC-AUC scoring) across all three base models. The best XGBoost configuration used 1,500 estimators, a learning rate of 0.05, max depth of 6, and explicit regularization (`reg_alpha=1`, `reg_lambda=5`). All model artifacts — trained models, scalers, feature column lists, hyperparameters, and per-run validation results — are versioned and stored in GCS for reproducibility.
-
-##### **Model Evaluation**
-
-The primary evaluation metric is **ROC-AUC**, which measures a model's ability to rank positive (above-baseline) examples above negative ones across all classification thresholds. Given that classes are naturally balanced at roughly 50/50, accuracy is also reported. F1 score for the above-baseline class provides a balanced view of precision and recall.
-
-Starting with v4.0, all evaluations were performed on the locked holdout validation set, making cross-generation comparisons reliable. For v1.0–v3.x, test sets were freshly re-split at each run — a limitation acknowledged when interpreting the generational AUC trend.
-
-**AUC progression across model versions:**
-
-| Version | Data composition (real / synthetic) | Features | LR AUC | RF AUC | XGB AUC |
-| :---- | :---- | :---- | :---- | :---- | :---- |
-| v1.0 | Mixed (66% real) | 39 | 0.626 | 0.760 | 0.770 |
-| v2.0 | Mixed (70% real) | 39 | 0.646 | 0.797 | 0.797 |
-| v3.0 | Mixed (80% real) | 36 | 0.657 | 0.825 | 0.830 |
-| v3.1 | Mixed (80% real) | 50 | 0.772 | 0.852 | 0.884 |
-| V4.0 *(locked val)* | 100% real | 53 | 0.737 | 0.858 | 0.901 |
-| v5.1 *(locked val)* | 100% real, tuned | 53 | 0.761 | 0.872 | **0.908** |
-
-The RF and XGB trajectories are monotonically increasing across every generation. The largest single-generation jump — XGB \+5.4 AUC points, LR \+11.5 points — came with the v3.1 feature engineering release, which introduced normalized engagement rates (`like_rate_24h`) and baseline comparison features. The improvement to LR was disproportionately large because these new features are more linearly separable with respect to the target; `like_rate_24h` became the top feature by coefficient in the LR model.
-
-The apparent LR regression from v3.1 (0.772) to v4.0 (0.737) reflects two simultaneous changes: the removal of synthetic data augmentation and a near-doubling of the training set with new real channels. Logistic Regression is more sensitive to distributional shifts in training data than tree models, and the synthetic data had provided a smoothing effect on class boundaries. With real-only data at higher volume, the class boundaries become less clean — more noise, more edge cases — and LR's structural inability to model non-linearities becomes more apparent. An unusually large coefficient on `like_count_upload_vs_baseline` in v4.0 LR suggests the model is over-relying on a single feature, consistent with multicollinearity issues. Hyperparameter tuning in v5.1, which adopted an ElasticNet penalty and a narrowed regularization grid, partially recovered the v3.1 performance.
-
-The RF and XGB improvements from v4.0 to v5.1 are attributable to targeted hyperparameter tuning and modest dataset growth. The fact that both tree models continued to improve while LR did not — despite all models receiving the same tuning treatment — confirms that the performance gap between LR and the tree families is structural rather than a data quantity or tuning issue.
-
-![AUC progression line chart across all model generations (one line per model family). The dashed vertical line marks the shift from per-run test sets to the locked holdout at v4.0.](./images/results/roc_auc_by_version_line.png)
+The metric of record is **ROC-AUC**: it measures how well a model *ranks* above-baseline videos over below-baseline ones across all decision thresholds, independent of where the cutoff is set. This fits the business use case (flagging likely over/under-performers is fundamentally a ranking task) and the naturally balanced target. **Accuracy** and **F1 (above-baseline class)** are reported alongside for completeness, since the costs of the two error types differ.
 
 ---
 
-#### **Results**
+#### **Exploratory Data Analysis — what the raw data looks like**
 
-The final XGBoost model (v5.1, evaluated on the locked 5,193-video holdout) achieved **0.908 ROC-AUC**, **82.8% accuracy**, and an **F1 score of 0.847** for the above-baseline class. Random Forest reached 0.872 AUC with comparable accuracy. The VotingClassifier ensemble of RF and XGB matched XGBoost almost exactly (0.905 AUC), confirming that XGBoost alone is the recommended primary model — the ensemble adds complexity without meaningful performance gain.
+A few findings from the raw and engineered data shaped every downstream choice.
 
-![ROC curves (TPR vs. FPR) for all four v5.1 models on the locked validation set, plotted on a single axes.](./images/results/roc_auc_curve.png)
+**1. Raw engagement is power-law skewed.** A handful of viral videos receive orders of magnitude more views than the median, producing a long right tail. These outliers are **retained** — they are real events, not errors, and removing them would distort the channel-relative baseline. The tree models are robust to them, and the engineered ratios compress them.
 
-Logistic Regression reached 0.761 AUC after tuning. The approximately 15-point gap between LR and the tree models is the headline finding of the modeling comparison: **YouTube engagement prediction is a non-linear problem**. Title characteristics, content format, early velocity, and channel-tier context interact in ways that a linear decision boundary cannot represent. The gap is consistent across every model generation and persists regardless of regularization strategy.
+![Distributions of raw engagement metrics, showing the heavy right-skew (power-law signature) of view, like, and comment counts.](./images/eda/01_engagement_distributions.png)
 
-**What the model learned — feature importance evolution across generations:**
+**2. Raw counts are not comparable across content categories.** View velocity differs by an order of magnitude across verticals — direct evidence that absolute counts are the wrong unit, and motivation for normalizing every signal against the channel's own baseline.
 
-The shift in feature importance rankings across generations is as informative as the AUC numbers themselves. In the earliest model versions (v1.0–v2.0), raw engagement counts dominated — `like_count_24h` and `view_count_24h` occupied the top positions. As the feature set evolved, the rankings shifted in two meaningful waves.
+![View velocity distribution across content verticals, showing medians at very different scales — raw counts are not comparable across categories.](./images/eda/03_view_velocity.png)
 
-The first shift came in v2.0–v3.0, when `is_short` rose to the top feature by XGBoost importance (0.072 in v3.0). This indicates that YouTube Shorts exhibit engagement dynamics sufficiently different from standard videos that content format is the most predictive single feature available at that stage — a threshold effect that a raw count feature cannot capture.
+**3. Feature engineering makes the signal usable.** Dividing two power-law quantities (e.g. likes ÷ views) yields a near-log-normal, far more symmetric distribution — which is exactly what makes the engineered features more predictive and more linearly separable than the raw counts they come from. (See [02 · Feature Engineering + Engineered-Data EDA](./src/capstone/notebooks/02_feature_engineering_eda.ipynb) for the detailed before/after distribution plots.)
 
-The second and larger shift came in v3.1, when normalized and channel-contextual features were introduced. `like_rate_24h` became the dominant signal in both LR and RF, while `baseline_baseline_video_count` emerged as a consistent top-three feature — suggesting that how established and active a channel is affects the predictability of any given video's performance.
+**4. Class balance across tiers + verticals:**
+The target is near-balanced overall but varies in structured ways by vertical and tier — validating the stratified split key.
 
-By v4.0, the top four XGBoost features were: (1) `tier_encoded` — a channel's subscriber tier is the single strongest predictor; (2) `baseline_baseline_video_count` — channel history and volume; (3) `like_rate_24h` — normalized 24-hour engagement quality; and (4) `is_short` — content format. The pattern is clear: *how a video is performing relative to that channel's norm, in the context of what kind of channel it belongs to,* is more predictive than any absolute engagement metric. This directly validates the channel-baseline design philosophy of the project.
+![Target class balance across vertical × tier cells, near 50% globally with structured per-segment deviation.](./images/eda/05_target_class_balance_vertical_tier.png)
 
-![Horizontal bar chart of top 20 XGBoost feature importances for the final v5.1 model, ranked by importance score.](./images/results/feature_importance_xgb.png)
+---
 
-![Heatmap of top feature importances across all model versions for XGBoost, showing how rankings shifted from raw counts (v1.0) to normalized rates and segment encodings (v4.0+).](./images/results/features_over_time_xgb.png)
+## **Results**
+
+#### **The hypothesis holds — early signal predicts 7-day relative performance.**
+
+On the locked, in-distribution validation set (5,192 videos, model version **v6.2**), the final candidates land as follows:
+
+| Model | ROC-AUC | Accuracy | Precision (macro) | Recall (macro) | F1 (macro) | F1 (above) | F1 (below) |
+| :---- | :----: | :----: | :----: | :----: | :----: | :----: | :----: |
+| **XGBoost** | **0.920** | 0.843 | 0.842 | 0.840 | 0.841 | 0.861 | 0.821 |
+| Stacking ensemble | 0.920 | 0.843 | 0.842 | 0.840 | 0.841 | 0.860 | 0.821 |
+| LightGBM | 0.919 | 0.844 | 0.843 | 0.840 | 0.842 | 0.862 | 0.821 |
+| Voting ensemble | 0.917 | 0.841 | 0.840 | 0.837 | 0.838 | 0.859 | 0.817 |
+| Random Forest | 0.886 | 0.806 | 0.808 | 0.798 | 0.801 | 0.833 | 0.769 |
+| MLP | 0.850 | 0.774 | 0.771 | 0.770 | 0.770 | 0.797 | 0.744 |
+| Logistic Regression | 0.768 | 0.704 | 0.700 | 0.697 | 0.698 | 0.738 | 0.658 |
+
+*Macro precision/recall/F1 are the unweighted mean across both classes; per-class F1 is reported for the above- and below-baseline classes separately because the two error types carry different business costs. Because the target is near-balanced, macro and weighted averages are nearly identical here.*
+
+The four strongest models finish **within ~0.003 ROC-AUC of one another** — a near-tie well inside run-to-run noise.
+
+![Precision and recall by model family on the locked validation set.](./images/results/precision_recall_by_model.png)
+
+![ROC curves for the leading model candidates on the locked validation set — true-positive vs. false-positive rate across all thresholds.](./images/results/roc_auc_curve.png)
+
+![Accuracy by model family on the locked validation set.](./images/results/accuracy_by_model.png)
+
+##### **What the model learned — and why it validates the project's core bet.**
+
+Across XGBoost, LightGBM, and Random Forest the dominant predictor is **`like_rate_24h`** (likes-per-hour at the 24-hour mark) — the cleanest early-momentum signal — followed by channel-context features: baseline video count, subscriber tier, and baseline-normalized view/like ratios. The progression of feature importance across versions tells the story: the earliest models leaned on **raw counts**; the mature models lean on **channel-relative, normalized signals**. In plain terms: *how a video is doing relative to its own channel's norm, in the context of what kind of channel it is*, beats any absolute engagement number. That is precisely the design philosophy the project was built around.
+
+![Top XGBoost feature importances for the final model — channel-relative and normalized signals dominate.](./images/results/feature_importance_xgb.png)
+
+![Heatmap of feature importance across model versions, showing the shift from raw counts (early) to normalized rates and segment encodings (mature).](./images/results/features_over_time_xgb.png)
+
+`is_short` (whether a video is a YouTube Short) has been a top feature since early generations, reflecting that Shorts have fundamentally different engagement dynamics from standard videos — a threshold effect a raw count cannot capture.
+
+![Engagement-rate distribution for Shorts vs. standard videos, split by vertical — Shorts behave differently enough to be one of the most predictive single features.](./images/results/shorts_engagement_violin.png)
+
+## **The decisive finding: a real generalization test, and a structural ceiling.**
+
+Two results elevate this from "a model that works" to "a model we understand."
+
+**(a) It generalizes to content categories it never trained on.** The models were trained only on **Tech, Lifestyle, and Education**. In the late stages of the project, I deliberately pointed the collection system at two **held-out categories the model would never train on — Music and Sports** — and walled their videos off entirely. Evaluated on these **2,447 never-seen videos**, the model still scored **~0.88 ROC-AUC** — a graceful, predictable ~0.04 drop, not a collapse. This is a much harder test than a normal holdout ("unseen videos from seen channels"); it asks "does the model work on **entire categories it has never encountered?"** — and the answer is **yes**. This out-of-bounds test was also the **tiebreaker that selected XGBoost:** XGB posted the best out-of-distribution ranking *and* the smallest generalization gap, while LightGBM's in-distribution edge did not transfer and the stacking ensemble added complexity for no out-of-distribution benefit. XGBoost is therefore the **strongest generalizer, the simplest performant option, and fully interpretable** — making it the ideal final model for this project.
+
+| Model | OOB ROC-AUC (Music/Sports) | Generalization gap (OOB − in-distribution) |
+| :---- | :----: | :----: |
+| **XGBoost** | **0.880** | **−0.041** (smallest) |
+| Stacking ensemble | 0.878 | −0.043 |
+| LightGBM | 0.875 | −0.043 |
+
+*A smaller (closer-to-zero) gap means the model degrades less on categories it never saw. XGBoost wins both columns — the decisive evidence for the final choice.*
+
+**(b) Performance is bounded by the signal, not the model.** Four independent lines of evidence converge on a **structural ceiling at ~0.92 ROC-AUC in-distribution**:
+
+1. More data, more features, more model families, and extensive tuning have **barely moved** in-distribution ROC-AUC since the gradient-boosting models matured.
+1.  Two independent gradient-boosting implementations (XGBoost and LightGBM) **converge to nearly identical scores**, and stacking them adds essentially nothing — when different implementations of the same idea, and ensembles of them, all land in the same place, it points to limits in the *signal*, not the model.
+1.  The Logistic Regression model sits **~0.15 AUC below** the tree models and never closes the gap — confirming the signal is genuinely non-linear and not a good fit for Logistic Regression, structurally.
+1.  The out-of-bounds test settles at a consistent ~0.88 — a clear, repeatable upper bound.
+
+Knowing **where the ceiling is and why** is itself a defensible scientific conclusion: future gains will come from **richer features, not more models.**
+
+This conclusion was the result of rigorous testing. The single consistent blind spot is **small channels (tier=S)**, where every tree model drops ~0.04 AUC (XGB **0.88 on tier=S** vs. 0.92 global). Two model-side fixes were built, tested, and **rejected**: per-tier specialized sub-models *backfired* (splitting the data cost signal), and up-weighting small-channel rows only dragged the global score down to meet S. The reason is fundamental: small channels simply carry **noisier signal**, and a rank-based metric cannot manufacture separability that the data does not contain. The tier=S ceiling is **intrinsic**, and the only real remaining lever is feature-side (encoding baseline *reliability*).
+
+---
+
+#### **Known Limitations**
+
+- **Small-channel (tier=S) blind spot** (~0.04 AUC below global) — proven intrinsic to low-volume channel data, not fixable model-side.
+- **Out-of-distribution drop** (~0.04 AUC) — real but graceful; categories far from the trained three should be treated as lower-confidence until represented in training.
+- **Small margins between top candidates** (~0.002–0.004 AUC) — the XGBoost choice is *directionally* robust (it wins both OOB ranking and generalization gap), but bootstrap confidence intervals would firm up the point estimates.
+- **Possible residual synthetic content** — YouTube's AI-media flag is captured and filtered, but undetected AI-generated content may remain, with unknown effects on engagement dynamics.
 
 ---
 
 #### **Next Steps**
 
-**Near-term feature engineering (no new data collection required):**
+**Near-term (no new data collection required):**
 
-*Log-transforming count features.* Raw engagement counts — view counts, like counts, comment counts — follow heavy-tailed power-law distributions on YouTube. A handful of viral videos receive orders of magnitude more views than the median, and `StandardScaler` normalizes mean and variance but does not correct the underlying distributional skew. Log-transforming these features before scaling would reduce the distorting effect of outliers and is likely to improve Logistic Regression performance meaningfully, while also benefiting the tree models at the margins. This is the lowest-cost, highest-expected-impact change available without touching the data collection pipeline.
-
-*`is_short` interaction features.* `is_short` has been a top-5 feature since v2.0 and currently ranks \#4 in XGBoost v4.0. YouTube Shorts exhibit fundamentally different viewer behavior — they are typically watched multiple times in a feed without likes, distributed through a separate recommendation system, and benefit from different algorithmic visibility mechanics than standard videos. A model applying the same engagement rate interpretation to a Short and a 20-minute video is making an implicit categorical error. Candidate interactions include `is_short × like_rate_24h` (engagement rate means something different for Shorts) and `is_short × view_velocity_ratio` (momentum growth patterns differ by format).
-
-![Side-by-side distribution of `like_rate_24h` for Shorts vs. non-Shorts (violin or box plot, split further by vertical).](./images/results/shorts_engagement_violin.png)
-
-![Bar plot distribution of shorts engagement).](./images/results/shorts_engagement_bar.png)
-
-*Within-vertical duration percentile.* The current `is_short` and `is_long` flags use global thresholds (under 60 seconds; over 20 minutes), but "long" means something different depending on vertical. A 15-minute video is standard for Education channels but above-average for Lifestyle. Computing a `duration_percentile_within_vertical` — where does this video fall in the duration distribution for its own vertical — would capture relative positioning rather than absolute length, making the feature more semantically meaningful across verticals.
-
-*Engagement rate momentum.* The pipeline already computes velocity and acceleration features for raw counts. An analogous feature for the engagement rate itself — the ratio `like_rate_24h / like_rate_upload`, expressing how much engagement density changed in the first 24 hours — could be a meaningful additional signal for identifying videos building genuine engaged audiences versus those accruing passive views.
-
-*Segment analysis.* The current global model learns a single approximation across vertical/tier cells that have meaningfully different engagement dynamics. A natural next step is evaluating model performance across specific verticals and also across each size tier. This evaluation could reveal a basis for separate per-vertical or per-tier models.
+- **Feature-side reliability encoding for small channels** — the variance/dispersion of baseline rates, not just their median — the one lever left for the tier=S ceiling.
+- **Log-transform the remaining raw absolute-count columns** — the derived velocity and subscriber-normalized features are already `log1p`-compressed, but the raw upload/24h view, like, and comment counts still enter the model untransformed; bringing them onto a log scale may help the linear model in particular.
+- **Within-vertical duration percentile** — "long" means something different per category; relative positioning is more meaningful than a global threshold.
+- **Operating-threshold tuning for tier=S** — since the limitation is separability, not calibration.
 
 **Longer-term (requires new data collection):**
 
-Adding new signals to the pipeline requires re-engineering the harvesting scripts, redeploying Cloud Run services, and waiting multiple weeks for sufficient new complete triplets to accrue with the new fields — the same pace at which the current \~17,000 triplets were collected. Given that investment, longer-term additions should be prioritized carefully. The highest-potential candidates are richer thumbnail signals beyond brightness, colorfulness, and face count — for example, whether the thumbnail contains text overlay, a common pattern in Shorts and educational content that the current feature set cannot detect.
+- **Broaden out-of-bounds coverage** as the Music/Sports set grows, and fold additional verticals into training as data accrues. (A further ~1k real triplets are expected in June 2026).
+- **Richer thumbnail signals** beyond brightness/colorfulness/faces — e.g. text-overlay detection, common in Shorts and educational content.
+- **Bootstrap confidence intervals** on the validation and OOB tables, so the final comparison rests on intervals rather than point estimates.
 
 ---
 
-#### **Project Notebooks**
+## **Outline of Project: Notebooks**
 
-The notebooks form a numbered sequence; see the
-[notebook guide](./src/capstone/notebooks/notebooks.md) for how they fit together
-and when to run each.
+The notebooks used in this project form a numbered sequence; see the [notebook guide](./src/capstone/notebooks/notebooks.md) for how they fit together and when to run each.
 
 - [01 · EDA — Raw Data](./src/capstone/notebooks/01_eda_raw_data.ipynb)
 - [02 · Feature Engineering + Engineered-Data EDA](./src/capstone/notebooks/02_feature_engineering_eda.ipynb)
@@ -187,28 +248,18 @@ and when to run each.
 - [04 · Hyperparameter Tuning](./src/capstone/notebooks/04_hyperparameter_tuning.ipynb)
 - [05 · Final Model Selection + Results](./src/capstone/notebooks/05_final_model_selection.ipynb)
 
----
-
-#### **Design Notes & Code Organization**
-
-As the project size grew, splitting the work into modular, purpose-built notebooks proved essential. EDA, model training, and hyperparameter tuning each have their own notebooks, sharing state through versioned GCS Parquet snapshots rather than passing DataFrames in-memory. This separation keeps implementation code separate from results write-up, allows each stage to be re-run independently, and was necessary for performance management — early hyperparameter tuning runs took over 30 minutes per execution.
-
-The underlying Python code is organized into a `pipeline/` package that implements a `PipelineRun` dataclass (typed state carrier), a `PipelineFactory` (assembles stages per run scenario), and a set of stage classes covering data loading, preprocessing, feature engineering, splitting, scaling, augmentation, training, validation, and snapshotting. Data collection scripts (`harvester`, `baseline harvester`, `channel discovery`) run as separate Cloud Run services and are entirely decoupled from the modeling pipeline. All model artifacts and data snapshots are versioned semantically (e.g., `v5.1`) and stored in GCS for reproducibility.
+Additional technical documentation and project documentation can be found in the [docs](docs/) folder.
 
 ---
 
-#### **Capstone Project Week 20 Check-In**
+#### **Engineering & Code Organization**
 
-For the Week 20 check-in, please review the [01 · EDA — Raw Data](./src/capstone/notebooks/01_eda_raw_data.ipynb) and [03 · Model Training + Results](./src/capstone/notebooks/03_model_training_results.ipynb) notebooks.
+Beyond the modeling, this project was a substantial engineering effort: **over 7.3k lines of Python code in production across 40 modules** (excluding the analysis notebooks, blank lines, and comments). The two largest components are the **data-collection services** (~1,450 lines) that harvest the longitudinal dataset, and the **modeling pipeline** (~3,140 lines) that turns it into versioned results.
 
----
-
-#### **Capstone Project Week 24 Final**
-
-Pending
+Analysis and decision-making happens in modular, purpose-built [notebooks](notebooks/) that share state through versioned GCS Parquet snapshots rather than passing DataFrames in memory — keeping implementation code separate from the write-up, letting each stage re-run independently, and managing performance (early tuning runs exceeded 30 minutes). The underlying package implements a `PipelineRun` dataclass (typed state carrier), a `PipelineFactory` (assembles stages per scenario), and stage classes for loading, preprocessing, feature engineering, splitting, scaling, augmentation, training, validation, and snapshotting. The data-collection services (`harvester`, `baselines`, `discovery`, `validation`) run as separate services in GCP, fully decoupled from the modeling pipeline. Every model artifact and data snapshot is versioned semantically (e.g. `v6.2`) and stored in GCS for reproducibility.
 
 ---
 
 ##### **Contact and Further Information**
 
-Jelani Gould-Bailey · [GitHub Repository](https://github.com/jelani-gb/capstone)
+Jelani Gould-Bailey · [LinkedIn](https://www.linkedin.com/in/jelani-gould-bailey/) · [GitHub Repository](https://github.com/jelani-gb/capstone)
