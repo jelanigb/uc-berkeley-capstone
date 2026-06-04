@@ -127,9 +127,13 @@ not a bug:
    generalizable structure (how velocity and normalized engagement map to
    outperformance) that *also* helps S. The global model exploits it; the
    specialist discards it. The tier=S gap was therefore **never** the global model
-   being "diluted" by M/L — small channels are *intrinsically* noisier (low
-   baseline-video counts, unstable normalized rates). Partitioning the data cannot
-   manufacture signal that is not there.
+   being "diluted" by M/L — small channels are *intrinsically* noisier. The
+   baseline harvester pulls a uniform last-30 videos per channel regardless of
+   tier, so this is not a matter of collecting *less* baseline data for small
+   channels; rather, each small-channel video's engagement rate swings far more in
+   relative terms, so the median of those 30 baseline videos is a less stable
+   estimate of "typical" performance. Partitioning the data cannot manufacture
+   signal that is not there.
 3. **Pooled AUC pays a calibration tax.** Routing mixes probabilities from
    independently-trained sub-models on slightly different scales, degrading
    cross-tier ranking and lowering the global AUC. Most visible in
@@ -253,8 +257,10 @@ Two model-side interventions have now failed for the same underlying reason — 
 **per-tier split** (§1–6: less data + lost cross-tier transfer) and **sample
 weighting** (§9: full data, but reweighting can't manufacture separability).
 Together they establish that **tier=S ≈ 0.882 is an intrinsic ceiling**: the
-limitation lives in the data/signal for small channels (sparse baseline history,
-noisy normalized rates), not in how the model allocates capacity or attention.
+limitation lives in the data/signal for small channels (high-variance per-video
+engagement, so noisier normalized rates and a less stable channel median — and,
+for genuinely new channels, sometimes fewer than the 30 baseline videos the
+pipeline targets), not in how the model allocates capacity or attention.
 
 **Remaining options:** (a) **feature-side** — encode baseline *reliability* for
 low-volume channels, the apparent root cause; or (b) **accept** ~0.882 as the

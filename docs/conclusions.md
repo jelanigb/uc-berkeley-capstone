@@ -85,15 +85,13 @@ version lineage (see [`docs/versioning.md`](./versioning.md)):
   hyperparameter searches** for XGB / LGB / MLP (thousands of underlying fits), or
   the **tier-specialized explorations** (9 per-tier sub-models plus several
   sample-weighting sweeps — §5.2), all of which were trained, evaluated, and in
-  the tier case archived to a dedicated `experiments/` namespace.
+  the case of the tiered sub-models, archived to a dedicated `experiments/` namespace.
 - Every model was scored on a **locked validation holdout** (fixed video IDs in
   GCS, stratified across an 18-cell vertical × tier × class key) so that
   comparisons across versions are honest and reproducible, not artifacts of a
   lucky re-split.
 
-In short: this conclusion rests on dozens of independently trained models, a
-seven-family bake-off, exhaustive hyperparameter search on the leading candidates,
-and two distinct architectural attempts to beat the hardest segment — all
+In short: this conclusion rests on multiple rounds of feature engineering, dozens of independently trained models, an extensive hyperparameter search on the leading candidates, and two distinct architectural attempts to beat the most difficult segment — all
 converging on the same place.
 
 ---
@@ -118,7 +116,7 @@ notebook 05):
   best on the locked holdout's threshold metrics is the *weakest* of the three
   out of distribution, with the largest gap. Its advantage was specific to the
   trained verticals.
-- **The stacking ensemble earns its complexity nowhere** — it merely matches XGB
+- **The stacking ensemble's performance does not justify its complexity** — it merely matches XGB
   in-distribution and is at best level with it out-of-bounds, while costing three
   base learners plus a meta-learner in training time, inference latency, and
   interpretability.
@@ -146,7 +144,7 @@ evidence converge on it.
 
 In-distribution ROC-AUC plateaus at **~0.92** and has barely moved since the
 gradient-boosting models matured, despite more data, more features, more model
-families, and exhaustive tuning. XGBoost and LightGBM — two independently
+families, and extensive tuning. XGBoost and LightGBM — two independently
 implemented gradient-boosting libraries — **converge to nearly identical scores**
 (Δ ≈ 0.001 AUC). When two different implementations of the same idea land in the
 same place, and stacking them on top of each other adds essentially zero
@@ -155,10 +153,9 @@ separable signal the features contain.
 
 ### 5.2 The hardest segment, `tier=S`, is a *proven* intrinsic ceiling
 
-Every tree model — including the chosen XGBoost — drops **~0.04 ROC-AUC on small
+Every tree model — including XGBoost — drops **~0.04 ROC-AUC on small
 channels (`tier=S`)** relative to its global score (e.g. XGB ~0.88 vs ~0.92). This
-is the single consistent blind spot (verticals, by contrast, show none). Crucially,
-this was not accepted on inspection — **two separate model-side interventions were
+is the single consistent blind spot across models (verticals, by contrast, show none). Tier-specific performance improvements were explored: **two separate model-side interventions were
 built, tested, and rejected** (full write-up in
 [`docs/tier_split_models.md`](./tier_split_models.md)):
 
@@ -170,10 +167,9 @@ built, tested, and rejected** (full write-up in
    global AUC fell monotonically. The apparent "narrowing" of the blind-spot gap
    was an illusion — the global ceiling fell to meet S, the opposite of the goal.
 
-The reason is instructive: ROC-AUC is rank-based and threshold-independent, so
+The reason: ROC-AUC is rank-based and threshold-independent, so
 *caring more* about small-channel rows cannot manufacture separability that the
-features do not contain. Small channels simply carry **noisier signal** — sparse
-baseline history and unstable normalized engagement rates. The `tier=S` ceiling of
+features do not contain. Small channels simply carry **noisier signal** (e.g. unstable normalized engagement rates). The `tier=S` ceiling of
 **~0.88 is intrinsic to the data for low-volume channels**, and the only remaining
 lever with real upside is feature-side (encoding baseline *reliability*), not
 model-side.
@@ -196,17 +192,17 @@ late outcome once you leave the trained verticals.
 
 **Taken together:** different model families, different complexities, two targeted
 fixes for the worst segment, and an unseen-data test all bump into the same
-boundary. That is the signature of a *signal-limited* problem. The most important
+boundary. This seems indicative of a *signal-limited* problem. The most important
 result of all this training is therefore a negative-but-valuable one: **we now know
 where the ceiling is and why it is there**, which is itself a defensible scientific
-conclusion and a precise map of where future effort must go (feature engineering,
+conclusion and a clearer pathway for future explorations (more feature collection + feature engineering,
 not more models).
 
 ---
 
 ## 6. The out-of-bounds validation architecture
 
-A deliberate, somewhat unusual architectural decision shaped the end of the
+A deliberate architectural decision shaped the end of the
 project: **harvesting an entirely separate body of data for the sole purpose of
 testing generalization.**
 
@@ -225,11 +221,11 @@ upload cadences, and audience behavior from the trained verticals — so strong 
 performance is real evidence the model learned *transferable structure* about early
 engagement, not vertical-specific quirks.
 
-Executing it (notebook 05) confirmed both halves of the story: the model **does**
+Executing the OOB validation (notebook 05) confirmed both halves of the story: Our model **does**
 generalize (~0.88 AUC on 2,447 never-seen Music/Sports videos), and it does so with
 a **bounded, predictable degradation** — which is exactly what reinforced the
 structural-ceiling conclusion above and served as the tiebreaker that selected
-XGBoost.
+XGBoost as the final model.
 
 ---
 
@@ -245,23 +241,23 @@ XGBoost.
   generalization gap), but these are point estimates — bootstrap confidence
   intervals would firm them up.
 - **Possible residual synthetic content** — YouTube's AI-media flag is captured and
-  filtered, but undetected AI-generated content may remain in the data.
+  filtered, but undetected AI-generated content may remain in the data. It is unclear whether AI-generated content has different engagement dynamics.
 
 ---
 
 ## 8. Future work
 
-- **Feature-side reliability encoding** for low-volume channels (baseline video
-  count / variance) — the one lever §5.2 leaves open for the `tier=S` ceiling.
+- **Exploration of additional feature capture**: 23 raw features are captured prior to feature engineering. There are additional signals available from the YouTube v3 API which could be explored for enhanced training runs.
+- **Feature-side reliability encoding** for low-volume channels (variance /
+  dispersion of the baseline rates, not just their median) — the one lever §5.2
+  leaves open for the `tier=S` ceiling.
 - **Operating-threshold tuning**, e.g. a lower decision threshold for `tier=S`
   predictions, since the limitation is separability rather than calibration.
 - **Broaden OOB coverage** as the Music/Sports set grows, and fold additional
   verticals into training once enough data accrues. (A further ~1k real triplets
-  are expected around 2026-04, which will support the next snapshot cycle.)
+  are expected in the near future, which will support the next snapshot cycle.)
 - **Confidence intervals** on the validation and OOB tables, so the final
   comparison rests on intervals rather than point estimates.
-- **Persist validation results historically** to GCS/BigQuery for longitudinal
-  tracking across model versions.
 
 ---
 
@@ -271,10 +267,9 @@ The project set out to test whether early engagement predicts channel-relative
 7-day performance, and the answer is a confident yes — ~0.92 AUC in-distribution,
 ~0.88 on entirely unseen content categories, from a single interpretable XGBoost
 model. But the more durable contribution is what the **51 models across 13
-versions, the seven-family bake-off, the exhaustive tuning, the two rejected
+versions, the extensive tuning, the two rejected
 tier-specialization strategies, and the dedicated out-of-bounds harvest** together
 establish: a clear, well-evidenced **structural ceiling**. Multiple model
 families, multiple complexity levels, two targeted fixes for the worst segment, and
 a true generalization test all arrive at the same boundary. Knowing precisely where
-that ceiling sits — and that it lives in the signal rather than the model — is the
-project's strongest and most defensible conclusion.
+that ceiling sits — and that it lives in the signal rather than the model — is a strong and defensible conclusion for this project.
