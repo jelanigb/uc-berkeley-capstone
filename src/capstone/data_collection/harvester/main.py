@@ -43,6 +43,10 @@ YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 PROJECT_ID = os.environ.get("PROJECT_ID")
 DATASET_ID = "capstone_youtube"
 
+# Set to True to stop ingesting new videos while allowing in-flight
+# videos (upload → 24h → 7d) to track through to completion.
+DRAIN_MODE = True
+
 # How many channels to process per run
 DEFAULT_BATCH_SIZE = 500
 
@@ -342,122 +346,123 @@ def run_harvester(request):
         # =============================================
         # PHASE 1: Detect new videos → "upload" snapshot
         # =============================================
-        channel_query = f"""
-            SELECT channel_id, channel_handle, vertical, tier
-            FROM `{PROJECT_ID}.{DATASET_ID}.channels_to_track`
-            ORDER BY RAND()
-            LIMIT {BATCH_SIZE}
-        """
-        try:
-            channels = list(bq_client.query(channel_query).result())
-        except Exception as e:
-            print(f"❌ BigQuery channel query failed: {e}")
-            return f"BigQuery Query Error: {e}", 500
-
-        if not channels:
-            return "No channels returned from BigQuery", 200
-
-        print(f"Phase 1: Scanning {len(channels)} channels for new videos...")
-
-        new_video_candidates = []
-        consecutive_errors = 0
-
-        for ch in channels:
-            try:
-                playlist_id = "UU" + ch.channel_id[2:]
-                res = safe_youtube_call(
-                    youtube.playlistItems().list(
-                        playlistId=playlist_id, part="snippet", maxResults=5
-                    )
-                )
-
-                for item in res.get("items", []):
-                    vid_id = item["snippet"]["resourceId"]["videoId"]
-                    pub = item["snippet"].get("publishedAt", "")
-                    if not pub:
-                        continue
-
-                    pub_dt = datetime.strptime(pub, "%Y-%m-%dT%H:%M:%SZ")
-                    hours_old = (now - pub_dt).total_seconds() / 3600
-
-                    lo, hi = POLL_WINDOWS["upload"]
-                    if lo <= hours_old <= hi:
-                        new_video_candidates.append((vid_id, pub, {
-                            "channel_id": ch.channel_id,
-                            "channel_handle": ch.channel_handle,
-                            "vertical": ch.vertical,
-                            "tier": ch.tier,
-                        }))
-
-                consecutive_errors = 0  # Reset on success
-
-            except YouTubeQuotaExceeded:
-                raise  # Always bubble up
-            except Exception as e:
-                consecutive_errors += 1
-                print(f"Error on {ch.channel_handle}: {e}")
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    print(f"🛑 {MAX_CONSECUTIVE_ERRORS} consecutive failures — aborting Phase 1")
-                    break
-                continue
-
-        # Check which are truly new
         upload_vid_ids = []  # Track which videos need upload_poll_done marked
 
-        if new_video_candidates:
-            candidate_ids = [c[0] for c in new_video_candidates]
-            id_list = ", ".join(f"'{vid}'" for vid in candidate_ids)
-            existing_query = f"""
-                SELECT video_id FROM `{PROJECT_ID}.{DATASET_ID}.videos_to_track`
-                WHERE video_id IN ({id_list})
+        if DRAIN_MODE:
+            print("Phase 1: SKIPPED (DRAIN_MODE=True — no new videos will be ingested)")
+        else:
+            channel_query = f"""
+                SELECT channel_id, channel_handle, vertical, tier
+                FROM `{PROJECT_ID}.{DATASET_ID}.channels_to_track`
+                ORDER BY RAND()
+                LIMIT {BATCH_SIZE}
             """
-            existing = {
-                r.video_id for r in bq_client.query(existing_query).result()
-            }
+            try:
+                channels = list(bq_client.query(channel_query).result())
+            except Exception as e:
+                print(f"❌ BigQuery channel query failed: {e}")
+                return f"BigQuery Query Error: {e}", 500
 
-            truly_new = [c for c in new_video_candidates if c[0] not in existing]
+            if not channels:
+                return "No channels returned from BigQuery", 200
 
-            if truly_new:
-                # Insert into tracking table via load job (no streaming buffer)
-                tracking_rows = [{
-                    "video_id": vid_id,
-                    "channel_id": ch_info["channel_id"],
-                    "published_at": pub_at,
-                    "first_seen_at": now.isoformat(),
-                    "upload_poll_done": False,
-                    "day1_poll_done": False,
-                    "day7_poll_done": False,
-                } for vid_id, pub_at, ch_info in truly_new]
+            print(f"Phase 1: Scanning {len(channels)} channels for new videos...")
 
-                insert_tracking_rows(bq_client, tracking_rows)
+            new_video_candidates = []
+            consecutive_errors = 0
 
-                # Fetch full video details + create upload snapshots
-                upload_vid_ids = [c[0] for c in truly_new]
-                ch_map = {c[0]: c[2] for c in truly_new}
-
-                unique_channels = list(
-                    {info["channel_id"] for info in ch_map.values()}
-                )
-                sub_counts = get_channel_stats(youtube, unique_channels)
-
-                for i in range(0, len(upload_vid_ids), 50):
-                    batch = upload_vid_ids[i:i + 50]
-                    v_res = safe_youtube_call(
-                        youtube.videos().list(
-                            id=",".join(batch),
-                            part="snippet,statistics,contentDetails,status"
+            for ch in channels:
+                try:
+                    playlist_id = "UU" + ch.channel_id[2:]
+                    res = safe_youtube_call(
+                        youtube.playlistItems().list(
+                            playlistId=playlist_id, part="snippet", maxResults=5
                         )
                     )
-                    for v in v_res.get("items", []):
-                        ch_info = ch_map[v["id"]]
-                        sub_count = sub_counts.get(ch_info["channel_id"], 0)
-                        row = build_snapshot_row(
-                            v, ch_info, "upload", now, sub_count
-                        )
-                        all_snapshots.append(row)
 
-        print(f"Phase 1 complete: {len(new_video_candidates)} candidates, "
-              f"{sum(1 for s in all_snapshots if s['poll_label'] == 'upload')} upload snapshots")
+                    for item in res.get("items", []):
+                        vid_id = item["snippet"]["resourceId"]["videoId"]
+                        pub = item["snippet"].get("publishedAt", "")
+                        if not pub:
+                            continue
+
+                        pub_dt = datetime.strptime(pub, "%Y-%m-%dT%H:%M:%SZ")
+                        hours_old = (now - pub_dt).total_seconds() / 3600
+
+                        lo, hi = POLL_WINDOWS["upload"]
+                        if lo <= hours_old <= hi:
+                            new_video_candidates.append((vid_id, pub, {
+                                "channel_id": ch.channel_id,
+                                "channel_handle": ch.channel_handle,
+                                "vertical": ch.vertical,
+                                "tier": ch.tier,
+                            }))
+
+                    consecutive_errors = 0  # Reset on success
+
+                except YouTubeQuotaExceeded:
+                    raise  # Always bubble up
+                except Exception as e:
+                    consecutive_errors += 1
+                    print(f"Error on {ch.channel_handle}: {e}")
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        print(f"🛑 {MAX_CONSECUTIVE_ERRORS} consecutive failures — aborting Phase 1")
+                        break
+                    continue
+
+            if new_video_candidates:
+                candidate_ids = [c[0] for c in new_video_candidates]
+                id_list = ", ".join(f"'{vid}'" for vid in candidate_ids)
+                existing_query = f"""
+                    SELECT video_id FROM `{PROJECT_ID}.{DATASET_ID}.videos_to_track`
+                    WHERE video_id IN ({id_list})
+                """
+                existing = {
+                    r.video_id for r in bq_client.query(existing_query).result()
+                }
+
+                truly_new = [c for c in new_video_candidates if c[0] not in existing]
+
+                if truly_new:
+                    # Insert into tracking table via load job (no streaming buffer)
+                    tracking_rows = [{
+                        "video_id": vid_id,
+                        "channel_id": ch_info["channel_id"],
+                        "published_at": pub_at,
+                        "first_seen_at": now.isoformat(),
+                        "upload_poll_done": False,
+                        "day1_poll_done": False,
+                        "day7_poll_done": False,
+                    } for vid_id, pub_at, ch_info in truly_new]
+
+                    insert_tracking_rows(bq_client, tracking_rows)
+
+                    upload_vid_ids = [c[0] for c in truly_new]
+                    ch_map = {c[0]: c[2] for c in truly_new}
+
+                    unique_channels = list(
+                        {info["channel_id"] for info in ch_map.values()}
+                    )
+                    sub_counts = get_channel_stats(youtube, unique_channels)
+
+                    for i in range(0, len(upload_vid_ids), 50):
+                        batch = upload_vid_ids[i:i + 50]
+                        v_res = safe_youtube_call(
+                            youtube.videos().list(
+                                id=",".join(batch),
+                                part="snippet,statistics,contentDetails,status"
+                            )
+                        )
+                        for v in v_res.get("items", []):
+                            ch_info = ch_map[v["id"]]
+                            sub_count = sub_counts.get(ch_info["channel_id"], 0)
+                            row = build_snapshot_row(
+                                v, ch_info, "upload", now, sub_count
+                            )
+                            all_snapshots.append(row)
+
+            print(f"Phase 1 complete: {len(new_video_candidates)} candidates, "
+                  f"{sum(1 for s in all_snapshots if s['poll_label'] == 'upload')} upload snapshots")
 
         # =============================================
         # PHASE 2: Follow-up "24h" polls
