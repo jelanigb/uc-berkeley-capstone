@@ -160,12 +160,18 @@ def plot_engagement_distribution(run):
 
     result = []
     for page_cols in pages:
-        fig, axes = plt.subplots(len(page_cols), 1, figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN))
+        # constrained_layout reflows at draw time (after the calling cell sets the
+        # per-subplot titles/labels), so a row's x-label never crowds the title of
+        # the row below it — unlike tight_layout, which runs once before labels exist.
+        fig, axes = plt.subplots(
+            len(page_cols), 1,
+            figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN),
+            constrained_layout=True,
+        )
         if len(page_cols) == 1:
             axes = [axes]
         for ax, col in zip(axes, page_cols):
             sns.histplot(df[col], kde=False, bins=40, color="teal", ax=ax)
-        fig.tight_layout()
         result.append((fig, list(axes), list(page_cols)))
     return result
 
@@ -206,7 +212,14 @@ def plot_kde_distributions(run, features: Optional[list] = None):
 
     result = []
     for page_cols in pages:
-        fig, axes = plt.subplots(len(page_cols), 1, figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN))
+        # constrained_layout reflows at draw time (after the calling cell sets the
+        # per-subplot titles/labels), keeping each row's x-label clear of the title
+        # of the row below it.
+        fig, axes = plt.subplots(
+            len(page_cols), 1,
+            figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN),
+            constrained_layout=True,
+        )
         if len(page_cols) == 1:
             axes = [axes]
         for ax, col in zip(axes, page_cols):
@@ -215,7 +228,6 @@ def plot_kde_distributions(run, features: Optional[list] = None):
             kde_fn = gaussian_kde(data)
             x_range = np.linspace(data.min(), data.max(), 200)
             ax.plot(x_range, kde_fn(x_range), color="#e55c00", linewidth=1.8)
-        fig.tight_layout()
         result.append((fig, list(axes), list(page_cols)))
     return result
 
@@ -632,7 +644,10 @@ def plot_precision_recall(run, compare_versions="all", model_type=None):
 
     palette_ = run.eda_config.get("palette", "Set2")
     fig_w, fig_h = run.eda_config["fig_size"]
-    fig, axes = plt.subplots(3, 2, figsize=(fig_w * 1.3, fig_h * 1.8))
+    # constrained_layout reflows at draw time (after the calling cell sets the
+    # per-panel titles, axis labels, and suptitle), so the stacked rows stay clear
+    # of one another.
+    fig, axes = plt.subplots(3, 2, figsize=(fig_w * 1.3, fig_h * 1.8), constrained_layout=True)
 
     # (ax, metric_col, show_legend) — legend only on the top-right panel.
     specs_ = [
@@ -655,7 +670,6 @@ def plot_precision_recall(run, compare_versions="all", model_type=None):
         ax.set_ylim(0, 1.05)
         ax.tick_params(axis="x", rotation=30)
 
-    fig.tight_layout()
     return fig, axes
 
 
