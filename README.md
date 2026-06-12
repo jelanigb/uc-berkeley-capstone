@@ -132,7 +132,7 @@ A few findings from the raw and engineered data shaped every downstream choice.
 
 **1. Raw engagement is power-law skewed.** A handful of viral videos receive orders of magnitude more views than the median, producing a long right tail. These outliers are **retained** — they are real events, not errors, and removing them would distort the channel-relative baseline. The tree models are robust to them, and the engineered ratios compress them.
 
-![Distributions of raw engagement metrics, showing the heavy right-skew (power-law signature) of view, like, and comment counts.](./images/eda/01_engagement_distributions.png)
+![Distributions of raw engagement metrics, showing the heavy right-skew (power-law signature) of view, like, and comment counts.](./images/eda/01_engagement_distributions_01.png)
 
 **2. Raw counts are not comparable across content categories.** View velocity differs by an order of magnitude across verticals — direct evidence that absolute counts are the wrong unit, and motivation for normalizing every signal against the channel's own baseline.
 
@@ -175,13 +175,13 @@ The four strongest models finish **within ~0.003 ROC-AUC of one another** — a 
 
 Across XGBoost, LightGBM, and Random Forest the dominant predictor is **`like_rate_24h`** (likes-per-hour at the 24-hour mark) — the cleanest early-momentum signal — followed by channel-context features: baseline video count, subscriber tier, and baseline-normalized view/like ratios. The progression of feature importance across versions tells the story: the earliest models leaned on **raw counts**; the mature models lean on **channel-relative, normalized signals**. In plain terms: *how a video is doing relative to its own channel's norm, in the context of what kind of channel it is*, beats any absolute engagement number. That is precisely the design philosophy the project was built around.
 
-![Top XGBoost feature importances for the final model — channel-relative and normalized signals dominate.](./images/results/feature_importance_xgb.png)
+![Top XGBoost feature importances for the final model — channel-relative and normalized signals dominate.](./images/results/05_feature_importance_xgb.png)
 
 ![Heatmap of feature importance across model versions, showing the shift from raw counts (early) to normalized rates and segment encodings (mature).](./images/results/features_over_time_xgb.png)
 
 `is_short` (whether a video is a YouTube Short) has been a top feature since early generations, reflecting that Shorts have fundamentally different engagement dynamics from standard videos — a threshold effect a raw count cannot capture.
 
-![Engagement-rate distribution for Shorts vs. standard videos, split by vertical — Shorts behave differently enough to be one of the most predictive single features.](./images/results/shorts_engagement_violin.png)
+![Engagement-rate distribution for Shorts vs. standard videos, split by vertical — Shorts behave differently enough to be one of the most predictive single features.](./images/eda/08_shorts_engagement_violin.png)
 
 ## **The decisive finding: a real generalization test, and a structural ceiling.**
 

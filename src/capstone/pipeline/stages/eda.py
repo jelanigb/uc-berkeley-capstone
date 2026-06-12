@@ -1,5 +1,4 @@
 import os
-import re
 from typing import Optional
 
 import matplotlib.pyplot as plt
@@ -10,6 +9,22 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import roc_curve, auc
 
 # --- Configuration & State Management ---
+#
+# Plotting contract (post-refactor)
+# ---------------------------------
+# Every plot_* function below BUILDS the chart and RETURNS its matplotlib
+# handle(s); it does NOT set the title / axis labels, does NOT call plt.show(),
+# and does NOT save. Titles and axis labels are authored in the calling notebook
+# cell via ax.set_title(...) / ax.set_xlabel(...) / ax.set_ylabel(...) so they are
+# visible in the cell source (and to graders), while all the heavy drawing logic
+# stays here. Persist a labelled figure with eda.save_fig(fig, name) afterwards.
+#
+# Return types:
+#   single-axis plots          -> ax
+#   two-axis / grid plots       -> (fig, axes)
+#   paged plots (distributions) -> list of (fig, axes, cols)
+#   plot_feature_importance     -> (ax, xlabel)   # xlabel depends on model type
+#   plot_is_short_engagement    -> (fig1, (ax1, ax2), fig2, ax3)
 
 
 def set_active_df(run, active_df: pd.DataFrame):
@@ -63,22 +78,26 @@ def _get_readable_df(run):
 def _is_valid_figure_name(name: str) -> bool:
     if not name:
         return False
-    #if re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
-    #    return False
     valid_exts = {".png", ".pdf", ".svg", ".jpg", ".jpeg", ".tif", ".tiff"}
     ext = os.path.splitext(name)[1].lower()
     return ext in valid_exts
 
 
-def _save_fig(plt, figure_name: str, page: Optional[int] = None):
+def save_fig(fig, figure_name: Optional[str], page: Optional[int] = None):
+    """Persist a figure to disk — call from the notebook AFTER setting labels.
+
+    No-op when figure_name is None (the dry-run / review path), so cells can pass
+    fig_path(...) directly. When `page` is given the index is appended to the
+    stem (root_01.png, root_02.png, ...) for the paged distribution plots.
+    """
+    if figure_name is None:
+        return
     if page is not None:
         base, ext = os.path.splitext(figure_name)
-        full_path = f"{base}_{page:02d}{ext}"
-    else:
-        full_path = figure_name
-    if not _is_valid_figure_name(full_path):
-        raise ValueError(f"Expected a valid figure name, got {full_path!r}")
-    plt.savefig(full_path)
+        figure_name = f"{base}_{page:02d}{ext}"
+    if not _is_valid_figure_name(figure_name):
+        raise ValueError(f"Expected a valid figure name, got {figure_name!r}")
+    fig.savefig(figure_name, bbox_inches="tight")
 
 
 _FEATURES_PER_PAGE = 10
@@ -88,44 +107,43 @@ _SUBPLOT_HEIGHT_IN = 3.5
 # --- Plotting Functions ---
 
 
-def plot_label_rates(run, save_figure_name: Optional[str] = None):
+def plot_label_rates(run):
     """
     Visualizes the success rate of the 'above_baseline' target segmented
     by Vertical and Tier to identify performance variations.
+
+    Returns the Axes. Set the title / x / y labels in the calling cell.
     """
     df = _get_readable_df(run)
     if "above_baseline" not in df.columns:
         print("Warning: 'above_baseline' target not found in active DataFrame.")
-        return
+        return None
 
-    plt.figure(figsize=run.eda_config["fig_size"])
     sns.set_theme(style="whitegrid")
+    fig, ax = plt.subplots(figsize=run.eda_config["fig_size"])
 
-    ax = sns.barplot(
+    sns.barplot(
         data=df,
         x="vertical",
         y="above_baseline",
         hue="tier",
         palette=run.eda_config.get("palette", "viridis"),
+        ax=ax,
     )
 
-    ax.set_title("Engagement Success Rate (Above Baseline) by Vertical & Tier")
-    ax.set_ylabel("Success Rate (Mean)")
-    ax.set_xlabel("Content Vertical")
-    plt.legend(title="Channel Tier", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    ax.legend(title="Channel Tier", bbox_to_anchor=(1.05, 1), loc="upper left")
+    fig.tight_layout()
+    return ax
 
 
-def plot_engagement_distribution(run, save_figure_name: Optional[str] = None):
+def plot_engagement_distribution(run):
     """
     Plain histograms (no KDE) for all continuous features, one per row.
 
-    Features are chunked into pages of up to _FEATURES_PER_PAGE so each page
-    is a manageable figure rather than one giant grid. Each page is shown and,
-    if save_figure_name is provided, saved as root_01.png, root_02.png, etc.
+    Features are chunked into pages of up to _FEATURES_PER_PAGE so each page is a
+    manageable figure rather than one giant grid. Returns a list of
+    (fig, axes, cols) — one tuple per page — so the calling cell can title each
+    subplot by its feature name and save each page with eda.save_fig(..., page=i).
 
     KDE is intentionally omitted — see plot_kde_distributions() for smoothed
     density curves on the priority features.
@@ -140,19 +158,16 @@ def plot_engagement_distribution(run, save_figure_name: Optional[str] = None):
     pages = [cols[i:i + _FEATURES_PER_PAGE] for i in range(0, len(cols), _FEATURES_PER_PAGE)]
     sns.set_theme(style="ticks")
 
-    for page_idx, page_cols in enumerate(pages, start=1):
+    result = []
+    for page_cols in pages:
         fig, axes = plt.subplots(len(page_cols), 1, figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN))
         if len(page_cols) == 1:
             axes = [axes]
         for ax, col in zip(axes, page_cols):
             sns.histplot(df[col], kde=False, bins=40, color="teal", ax=ax)
-            ax.set_title(f"Dist: {col}")
-            ax.set_xlabel("")
-            ax.set_ylabel("Frequency")
-        plt.tight_layout()
-        if save_figure_name is not None:
-            _save_fig(plt, save_figure_name, page=page_idx)
-        plt.show()
+        fig.tight_layout()
+        result.append((fig, list(axes), list(page_cols)))
+    return result
 
 
 # Priority features for KDE: the core engagement signals whose smoothed density
@@ -166,18 +181,15 @@ _KDE_DEFAULT_FEATURES = [
 ]
 
 
-def plot_kde_distributions(
-    run,
-    features: Optional[list] = None,
-    save_figure_name: Optional[str] = None,
-):
+def plot_kde_distributions(run, features: Optional[list] = None):
     """
     Histograms with pre-computed scipy KDE curves, one feature per row.
 
-    Features are chunked into pages of up to _FEATURES_PER_PAGE, each saved
-    as root_01.png, root_02.png, etc. KDE is computed once on a 200-point grid
-    via scipy.stats.gaussian_kde — fast regardless of dataset size. Pass
-    `features` to override the default priority list.
+    Features are chunked into pages of up to _FEATURES_PER_PAGE. KDE is computed
+    once on a 200-point grid via scipy.stats.gaussian_kde — fast regardless of
+    dataset size. Pass `features` to override the default priority list.
+
+    Returns a list of (fig, axes, cols) — one tuple per page.
     """
     df = _get_readable_df(run)
 
@@ -186,13 +198,14 @@ def plot_kde_distributions(
 
     if not cols:
         print("No matching features found in active DataFrame.")
-        return
+        return []
 
     fig_w = run.eda_config["fig_size"][0]
     pages = [cols[i:i + _FEATURES_PER_PAGE] for i in range(0, len(cols), _FEATURES_PER_PAGE)]
     sns.set_theme(style="ticks")
 
-    for page_idx, page_cols in enumerate(pages, start=1):
+    result = []
+    for page_cols in pages:
         fig, axes = plt.subplots(len(page_cols), 1, figsize=(fig_w, len(page_cols) * _SUBPLOT_HEIGHT_IN))
         if len(page_cols) == 1:
             axes = [axes]
@@ -202,18 +215,12 @@ def plot_kde_distributions(
             kde_fn = gaussian_kde(data)
             x_range = np.linspace(data.min(), data.max(), 200)
             ax.plot(x_range, kde_fn(x_range), color="#e55c00", linewidth=1.8)
-            ax.set_title(f"KDE: {col}")
-            ax.set_xlabel("")
-            ax.set_ylabel("Density")
-        plt.tight_layout()
-        if save_figure_name is not None:
-            _save_fig(plt, save_figure_name, page=page_idx)
-        plt.show()
+        fig.tight_layout()
+        result.append((fig, list(axes), list(page_cols)))
+    return result
 
 
-def plot_feature_correlations(
-    run, target="above_baseline", save_figure_name: Optional[str] = None
-):
+def plot_feature_correlations(run, target="above_baseline"):
     """
     Heatmap of feature correlations. Includes a target leakage check by
     highlighting relationships with the engagement label.
@@ -222,6 +229,8 @@ def plot_feature_correlations(
     readable regardless of how many features are present. Numeric annotations
     are added when the matrix is small enough (≤ 25 features) to fit them;
     font size scales down with matrix size.
+
+    Returns the Axes.
     """
     df = _get_readable_df(run).select_dtypes(include=[np.number])
     df = df.loc[:, df.var() > 0.01]
@@ -237,7 +246,7 @@ def plot_feature_correlations(
     annot = n <= 25
     annot_kws = {"size": max(6, min(9, 180 // n))} if annot else None
 
-    plt.figure(figsize=(fig_w, fig_h))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     mask = np.triu(np.ones_like(corr, dtype=bool))
 
     sns.heatmap(
@@ -250,29 +259,27 @@ def plot_feature_correlations(
         center=0,
         linewidths=0.3,
         cbar_kws={"shrink": 0.8},
+        ax=ax,
     )
 
-    plt.title(f"Feature Correlation Matrix (Target: {target})", pad=12)
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
-def plot_target_correlations(
-    run, target="above_baseline", save_figure_name: Optional[str] = None
-):
+def plot_target_correlations(run, target="above_baseline"):
     """
     Horizontal bar chart of per-feature Pearson correlations with the target.
     The focused leakage check: positive correlations in blue, negative in red,
     sorted by absolute magnitude. Low-variance features are filtered out first.
+
+    Returns the Axes.
     """
     df = _get_readable_df(run).select_dtypes(include=[np.number])
     df = df.loc[:, df.var() > 0.01]
 
     if target not in df.columns:
         print(f"Warning: target '{target}' not found in active DataFrame.")
-        return
+        return None
 
     correlations = (
         df.corr()[target]
@@ -283,20 +290,14 @@ def plot_target_correlations(
     colors = ["#e74c3c" if v < 0 else "#2980b9" for v in correlations]
 
     fig_w, fig_h = run.eda_config["fig_size"]
-    plt.figure(figsize=(fig_w, max(fig_h, len(correlations) * 0.35)))
-    plt.barh(correlations.index, correlations.values, color=colors)
-    plt.axvline(0, color="black", linewidth=0.8, linestyle="--")
-    plt.title(f"Feature Correlations with '{target}' (leakage check)")
-    plt.xlabel("Pearson r")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig, ax = plt.subplots(figsize=(fig_w, max(fig_h, len(correlations) * 0.35)))
+    ax.barh(correlations.index, correlations.values, color=colors)
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    fig.tight_layout()
+    return ax
 
 
-def plot_vertical_segmentation(
-    run, feature="view_count_24h", save_figure_name: Optional[str] = None
-):
+def plot_vertical_segmentation(run, feature="view_count_24h"):
     """
     Compares the distribution of a single metric across content verticals.
 
@@ -304,26 +305,25 @@ def plot_vertical_segmentation(
     Right subplot: density overlay using scipy pre-computed KDE — one
     gaussian_kde call per vertical evaluated at 200 points, making it fast
     even for large datasets.
+
+    Returns (fig, (ax_box, ax_density)).
     """
     df = _get_readable_df(run)
 
     if feature not in df.columns:
         print(f"Feature '{feature}' not found in active DataFrame.")
-        return
+        return None
 
     verticals_ = sorted(df["vertical"].dropna().unique())
     palette_ = sns.color_palette("Set2", len(verticals_))
 
-    plt.figure(figsize=run.eda_config["fig_size"])
+    fig, (ax_box, ax_density) = plt.subplots(1, 2, figsize=run.eda_config["fig_size"])
 
     # Subplot 1: boxplot — positions and spread
-    plt.subplot(1, 2, 1)
-    sns.boxplot(data=df, x="vertical", y=feature, palette="Set2", order=verticals_)
-    plt.title(f"{feature} by Vertical")
-    plt.xticks(rotation=45)
+    sns.boxplot(data=df, x="vertical", y=feature, palette="Set2", order=verticals_, ax=ax_box)
+    ax_box.tick_params(axis="x", rotation=45)
 
     # Subplot 2: pre-computed KDE per vertical
-    ax2 = plt.subplot(1, 2, 2)
     for idx, v in enumerate(verticals_):
         data = df[df["vertical"] == v][feature].dropna().values
         if len(data) < 2:
@@ -331,18 +331,12 @@ def plot_vertical_segmentation(
         kde_fn = gaussian_kde(data)
         x_range = np.linspace(data.min(), data.max(), 200)
         density = kde_fn(x_range)
-        ax2.fill_between(x_range, density, alpha=0.25, color=palette_[idx])
-        ax2.plot(x_range, density, color=palette_[idx], linewidth=1.8, label=v)
+        ax_density.fill_between(x_range, density, alpha=0.25, color=palette_[idx])
+        ax_density.plot(x_range, density, color=palette_[idx], linewidth=1.8, label=v)
 
-    ax2.set_title(f"{feature} Density per Vertical")
-    ax2.set_xlabel(feature)
-    ax2.set_ylabel("Density")
-    ax2.legend(title="Vertical")
-
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    ax_density.legend(title="Vertical")
+    fig.tight_layout()
+    return fig, (ax_box, ax_density)
 
 
 # =========================================================================
@@ -357,8 +351,6 @@ def plot_split_comparison(
     results_by_split: dict,
     metric: str = "roc_auc",
     model_order: Optional[list] = None,
-    title: Optional[str] = None,
-    save_figure_name: Optional[str] = None,
     figsize: tuple = (11, 6),
 ):
     """Grouped bar chart comparing one metric across train / test / validation per model.
@@ -378,11 +370,13 @@ def plot_split_comparison(
     The train-minus-validation gap is annotated above each model group as an
     overfitting diagnostic: a large positive gap means the model fits the
     training data far better than the held-out validation set.
+
+    Returns the Axes.
     """
     splits = [s for s in ("train", "test", "val") if s in results_by_split]
     if not splits:
         print("No splits found in results_by_split — expected keys train/test/val.")
-        return
+        return None
 
     if model_order is None:
         ref = (
@@ -396,8 +390,8 @@ def plot_split_comparison(
     x = np.arange(len(model_order))
     width = 0.8 / n_splits
 
-    fig, ax = plt.subplots(figsize=figsize)
     sns.set_theme(style="whitegrid")
+    fig, ax = plt.subplots(figsize=figsize)
 
     # Collect all bar values upfront so we can set ylim before drawing text.
     split_vals = {
@@ -443,19 +437,13 @@ def plot_split_comparison(
                     ha="center", va="bottom", fontsize=8, color="#b30000",
                 )
 
-    metric_label = metric.replace("_", " ").upper()
     ax.set_xticks(x)
     ax.set_xticklabels(model_order)
-    ax.set_xlabel("Model")
-    ax.set_ylabel(metric_label)
     ax.set_ylim(0, y_top)
-    ax.set_title(title or f"{metric_label} by Model — Train / Test / Validation")
     ax.legend(title="Split", loc="lower right")
     sns.despine()
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
 # =========================================================================
@@ -520,13 +508,11 @@ def _add_eval_divider(ax, sorted_prefixes: list):
             break
 
 
-def plot_roc_auc(
-    run,
-    compare_versions="all",
-    model_type=None,
-    save_figure_name: Optional[str] = None,
-):
-    """Line chart of ROC-AUC across model snapshot versions, one line per model type."""
+def plot_roc_auc(run, compare_versions="all", model_type=None):
+    """Line chart of ROC-AUC across model snapshot versions, one line per model type.
+
+    Returns the Axes.
+    """
     df = _get_filtered_comparison(run, compare_versions, model_type)
     df_plot, sorted_prefixes = _prep_comparison_df(df)
 
@@ -537,22 +523,14 @@ def plot_roc_auc(
         palette=run.eda_config.get("palette", "Set2"), ax=ax,
     )
     _add_eval_divider(ax, sorted_prefixes)
-    ax.set_title("ROC-AUC by Model Version")
-    ax.set_xlabel("Version")
-    ax.set_ylabel("ROC-AUC")
     ax.set_ylim(bottom=max(0, df_plot["roc_auc"].min() - 0.05))
-    plt.xticks(rotation=30, ha="right")
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
     ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
-def plot_roc_curves(
-    run,
-    save_figure_name: Optional[str] = None,
-):
+def plot_roc_curves(run):
     """
     Plots actual ROC curves (TPR vs. FPR) for every model in run.models,
     evaluated against the locked validation set (run.X_val_unscaled + run.y_val).
@@ -562,13 +540,14 @@ def plot_roc_curves(
     A dashed diagonal reference line (random classifier) is included.
 
     Requires: run.models, run.X_val_unscaled, run.y_val all populated.
+    Returns the Axes.
     """
     if not getattr(run, "models", None):
         print("No models found in run.models. Train or load models first.")
-        return
+        return None
     if getattr(run, "X_val_unscaled", None) is None or getattr(run, "y_val", None) is None:
         print("Validation set not found. Run DataSplitter + Scaler first.")
-        return
+        return None
 
     palette_ = sns.color_palette("Set2", len(run.models))
     fig, ax = plt.subplots(figsize=run.eda_config["fig_size"])
@@ -603,25 +582,17 @@ def plot_roc_curves(
 
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curves — v5.1 Models (Locked Validation Set)")
     ax.legend(loc="lower right")
     sns.despine()
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
+def plot_accuracy(run, compare_versions="all", model_type=None):
+    """Line chart of accuracy across model snapshot versions, one line per model type.
 
-def plot_accuracy(
-    run,
-    compare_versions="all",
-    model_type=None,
-    save_figure_name: Optional[str] = None,
-):
-    """Line chart of accuracy across model snapshot versions, one line per model type."""
+    Returns the Axes.
+    """
     df = _get_filtered_comparison(run, compare_versions, model_type)
     df_plot, sorted_prefixes = _prep_comparison_df(df)
 
@@ -632,44 +603,47 @@ def plot_accuracy(
         palette=run.eda_config.get("palette", "Set2"), ax=ax,
     )
     _add_eval_divider(ax, sorted_prefixes)
-    ax.set_title("Accuracy by Model Version")
-    ax.set_xlabel("Version")
-    ax.set_ylabel("Accuracy")
     ax.set_ylim(bottom=max(0, df_plot["accuracy"].min() - 0.05))
-    plt.xticks(rotation=30, ha="right")
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
     ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
-def plot_precision_recall(
-    run,
-    compare_versions="all",
-    model_type=None,
-    save_figure_name: Optional[str] = None,
-):
+# Panel layout for plot_precision_recall — the calling cell titles each axis in
+# this order (row-major over the 3x2 grid).
+PRECISION_RECALL_PANELS = [
+    "precision_macro", "recall_macro",
+    "precision_above", "recall_above",
+    "precision_below", "recall_below",
+]
+
+
+def plot_precision_recall(run, compare_versions="all", model_type=None):
     """3x2 grid: precision and recall for the overall (macro) average and both
     classes across model versions. The top row is the global metric; the lower
-    rows are the per-class breakdown."""
+    rows are the per-class breakdown. Panels are laid out row-major following
+    PRECISION_RECALL_PANELS.
+
+    Returns (fig, axes) where axes is the 3x2 array.
+    """
     df = _get_filtered_comparison(run, compare_versions, model_type)
     df_plot, sorted_prefixes = _prep_comparison_df(df)
 
     palette_ = run.eda_config.get("palette", "Set2")
     fig_w, fig_h = run.eda_config["fig_size"]
     fig, axes = plt.subplots(3, 2, figsize=(fig_w * 1.3, fig_h * 1.8))
-    fig.suptitle("Precision & Recall by Model Version", y=1.01)
 
+    # (ax, metric_col, show_legend) — legend only on the top-right panel.
     specs_ = [
-        (axes[0, 0], "precision_macro", "Precision — Overall (macro)", False),
-        (axes[0, 1], "recall_macro",    "Recall — Overall (macro)",    True),
-        (axes[1, 0], "precision_above", "Precision — Above Baseline", False),
-        (axes[1, 1], "recall_above",    "Recall — Above Baseline",    False),
-        (axes[2, 0], "precision_below", "Precision — Below Baseline", False),
-        (axes[2, 1], "recall_below",    "Recall — Below Baseline",    False),
+        (axes[0, 0], "precision_macro", False),
+        (axes[0, 1], "recall_macro",    True),
+        (axes[1, 0], "precision_above", False),
+        (axes[1, 1], "recall_above",    False),
+        (axes[2, 0], "precision_below", False),
+        (axes[2, 1], "recall_below",    False),
     ]
-    for ax, col, title, show_legend in specs_:
+    for ax, col, show_legend in specs_:
         sns.lineplot(
             data=df_plot, x="version_prefix", y=col,
             hue="model_type_label", style="model_type_label", markers=True, dashes=False,
@@ -678,37 +652,34 @@ def plot_precision_recall(
         if show_legend:
             ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
         _add_eval_divider(ax, sorted_prefixes)
-        ax.set_title(title)
-        ax.set_xlabel("")
-        ax.set_ylabel(col.split("_")[0].capitalize())
         ax.set_ylim(0, 1.05)
         ax.tick_params(axis="x", rotation=30)
 
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return fig, axes
 
 
-def plot_f1(
-    run,
-    compare_versions="all",
-    model_type=None,
-    save_figure_name: Optional[str] = None,
-):
+# Panel layout for plot_f1 — the calling cell titles each axis in this order.
+F1_PANELS = ["f1_macro", "f1_above", "f1_below"]
+
+
+def plot_f1(run, compare_versions="all", model_type=None):
     """F1 for the overall (macro) average, Above Baseline, and Below Baseline
-    across model versions. The overall macro F1 is shown first."""
+    across model versions, laid out left-to-right following F1_PANELS.
+
+    Returns (fig, axes) where axes is the (ax0, ax1, ax2) tuple.
+    """
     df = _get_filtered_comparison(run, compare_versions, model_type)
     df_plot, sorted_prefixes = _prep_comparison_df(df)
 
     palette_ = run.eda_config.get("palette", "Set2")
     fig_w, fig_h = run.eda_config["fig_size"]
-    fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(fig_w * 1.4, fig_h))
+    fig, axes = plt.subplots(1, 3, figsize=(fig_w * 1.4, fig_h))
 
-    for ax, col, title, show_legend in [
-        (ax0, "f1_macro", "F1 — Overall (macro)", False),
-        (ax1, "f1_above", "F1 — Above Baseline", False),
-        (ax2, "f1_below", "F1 — Below Baseline", True),
+    for ax, col, show_legend in [
+        (axes[0], "f1_macro", False),
+        (axes[1], "f1_above", False),
+        (axes[2], "f1_below", True),
     ]:
         sns.lineplot(
             data=df_plot, x="version_prefix", y=col,
@@ -718,28 +689,21 @@ def plot_f1(
         if show_legend:
             ax.legend(title="Model Type", bbox_to_anchor=(1.05, 1), loc="upper left")
         _add_eval_divider(ax, sorted_prefixes)
-        ax.set_title(title)
-        ax.set_xlabel("Version")
-        ax.set_ylabel("F1 Score")
         ax.set_ylim(0, 1.05)
         ax.tick_params(axis="x", rotation=30)
 
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return fig, axes
 
 
-def plot_data_composition_vs_accuracy(
-    run,
-    compare_versions="all",
-    save_figure_name: Optional[str] = None,
-):
+def plot_data_composition_vs_accuracy(run, compare_versions="all"):
     """Correlation heatmap of training data composition vs. accuracy metrics.
 
     Columns: real_rows, synth_rows, total_rows, accuracy, roc_auc, f1_above, f1_below.
     Treat results as directional signals — correlation is across model snapshots,
     not independent observations.
+
+    Returns the Axes.
     """
     df = _get_filtered_comparison(run, compare_versions, None)
     df_corr_ = df.copy()
@@ -749,36 +713,29 @@ def plot_data_composition_vs_accuracy(
     corr_ = df_corr_[cols_].corr()
 
     fig_w, fig_h = run.eda_config["fig_size"]
-    plt.figure(figsize=(max(fig_w, 8), max(fig_h, 7)))
+    fig, ax = plt.subplots(figsize=(max(fig_w, 8), max(fig_h, 7)))
     sns.heatmap(
         corr_, annot=True, fmt=".2f", cmap="RdBu_r", center=0,
-        linewidths=0.4, cbar_kws={"shrink": 0.8},
+        linewidths=0.4, cbar_kws={"shrink": 0.8}, ax=ax,
     )
-    plt.title(f"Training Data Composition vs. Accuracy Metrics (n={len(df_corr_)} snapshots)")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
-def plot_top_features_over_time(
-    run,
-    model_type,
-    compare_versions="all",
-    top_n: int = 10,
-    save_figure_name: Optional[str] = None,
-):
+def plot_top_features_over_time(run, model_type, compare_versions="all", top_n: int = 10):
     """Heatmap of top feature importances for a single model type across snapshot versions.
 
     model_type must be a ModelType enum value. top_n features are selected by mean
     absolute importance across versions, so coefficients (LR) and tree importances
     are handled consistently.
+
+    Returns the Axes (or None when there is no feature data).
     """
     from utils.snapshot_model import load_top_features_over_time, get_version_prefixes
 
     df_features_ = load_top_features_over_time(model_type, compare_versions)
     if df_features_.empty:
-        return
+        return None
 
     top_feats_ = (
         df_features_.groupby("feature")["importance"]
@@ -796,27 +753,16 @@ def plot_top_features_over_time(
     pivot_ = pivot_[sorted_cols_]
 
     fig_w, fig_h = run.eda_config["fig_size"]
-    plt.figure(figsize=(max(fig_w, len(sorted_cols_) * 1.4), max(fig_h, top_n * 0.55)))
+    fig, ax = plt.subplots(figsize=(max(fig_w, len(sorted_cols_) * 1.4), max(fig_h, top_n * 0.55)))
     sns.heatmap(
         pivot_, annot=True, fmt=".4f", cmap="RdBu_r", center=0,
-        linewidths=0.3, cbar_kws={"shrink": 0.7},
+        linewidths=0.3, cbar_kws={"shrink": 0.7}, ax=ax,
     )
-    display_name_ = _MODEL_DISPLAY_NAMES.get(model_type.value, model_type.value)
-    plt.title(f"Top {top_n} Features Over Time — {display_name_}")
-    plt.xlabel("Version")
-    plt.ylabel("Feature")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+    fig.tight_layout()
+    return ax
 
 
-def plot_feature_importance(
-    run,
-    model_name: str = "xgb",
-    top_n: int = 20,
-    save_figure_name: Optional[str] = None,
-):
+def plot_feature_importance(run, model_name: str = "xgb", top_n: int = 20):
     """
     Horizontal bar chart of the top N feature importances (or coefficients)
     for a single model in run.models. Positive importances in blue, negative
@@ -825,11 +771,15 @@ def plot_feature_importance(
     Args:
         model_name: Key in run.models (e.g. 'xgb', 'rf', 'lr_l1', 'ensemble').
         top_n:      Number of features to show, ranked by absolute value.
+
+    Returns (ax, xlabel) — xlabel describes the quantity plotted (importance vs.
+    coefficient) and depends on the model type, so the calling cell sets it via
+    ax.set_xlabel(xlabel). Returns None when the model is missing or unusable.
     """
     if model_name not in run.models:
         print(f"Model '{model_name}' not found in run.models. "
               f"Available: {list(run.models.keys())}")
-        return
+        return None
 
     entry = run.models[model_name]
     model = entry["model"]
@@ -852,7 +802,7 @@ def plot_feature_importance(
                 importances_list.append(estimator.feature_importances_)
         if not importances_list:
             print(f"Model '{model_name}' does not expose feature importances.")
-            return
+            return None
         importances = np.mean(importances_list, axis=0)
         xlabel = "Mean Feature Importance (sub-estimators)"
         is_signed = False
@@ -860,7 +810,7 @@ def plot_feature_importance(
     if len(feature_cols) != len(importances):
         print(f"Feature column count mismatch: {len(feature_cols)} cols vs "
               f"{len(importances)} importances.")
-        return
+        return None
 
     df_imp = (
         pd.DataFrame({"feature": feature_cols, "importance": importances})
@@ -875,35 +825,29 @@ def plot_feature_importance(
     )
 
     fig_w, fig_h = run.eda_config["fig_size"]
-    plt.figure(figsize=(fig_w, max(fig_h, top_n * 0.4)))
-    plt.barh(df_imp["feature"], df_imp["importance"], color=colors)
+    fig, ax = plt.subplots(figsize=(fig_w, max(fig_h, top_n * 0.4)))
+    ax.barh(df_imp["feature"], df_imp["importance"], color=colors)
     if is_signed:
-        plt.axvline(0, color="black", linewidth=0.8, linestyle="--")
-    plt.xlabel(xlabel)
-    plt.title(f"Top {top_n} Feature Importances — {model_name}")
-    plt.tight_layout()
-    if save_figure_name is not None:
-        _save_fig(plt, save_figure_name)
-    plt.show()
+        ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    fig.tight_layout()
+    return ax, xlabel
 
 
-def plot_is_short_engagement(
-    run,
-    feature: str = "like_rate_24h",
-    save_figure_name: Optional[str] = None,
-):
+def plot_is_short_engagement(run, feature: str = "like_rate_24h"):
     """
     Compares the distribution of an engagement metric between YouTube Shorts
     (is_short=1) and standard videos (is_short=0), split by vertical.
 
-    Left subplot: violin plot of `feature` by content type (Short vs. Standard),
+    Figure 1: side-by-side violins — Standard (left) and Short (right),
     coloured by vertical.
-    Right subplot: median `feature` per vertical × content type as a grouped
-    bar chart, with error bars showing 95% CI via bootstrapping.
+    Figure 2: median `feature` per vertical × content type as a grouped bar
+    chart, with error bars showing 95% CI via bootstrapping.
 
     Args:
         feature: Engagement metric to compare. Defaults to 'like_rate_24h'.
                  Other useful options: 'view_velocity_ratio', 'like_rate_upload'.
+
+    Returns (fig_violin, (ax_standard, ax_short), fig_bar, ax_bar).
     """
     df = _get_readable_df(run)
 
@@ -911,7 +855,7 @@ def plot_is_short_engagement(
     missing = [c for c in required if c not in df.columns]
     if missing:
         print(f"Missing columns: {missing}. Set a post-engineering DataFrame first.")
-        return
+        return None
 
     df_plot = df[required].copy()
     df_plot["Content Type"] = df_plot["is_short"].map({1: "Short (≤60s)", 0: "Standard"})
@@ -920,11 +864,8 @@ def plot_is_short_engagement(
     fig_w, fig_h = run.eda_config["fig_size"]
 
     # Figure 1: side-by-side violins — Standard (left) and Short (right)
-    fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(fig_w * 1.3, fig_h), sharey=False)
-    for ax, label, title_suffix in [
-        (ax1, "Standard",    "Standard Videos"),
-        (ax2, "Short (≤60s)", "YouTube Shorts (≤60s)"),
-    ]:
+    fig_violin, (ax_standard, ax_short) = plt.subplots(1, 2, figsize=(fig_w * 1.3, fig_h), sharey=False)
+    for ax, label in [(ax_standard, "Standard"), (ax_short, "Short (≤60s)")]:
         subset_ = df_plot[df_plot["Content Type"] == label]
         sns.violinplot(
             data=subset_,
@@ -937,24 +878,12 @@ def plot_is_short_engagement(
             cut=0,
             legend=False,
         )
-        ax.set_title(f"{feature}\n{title_suffix}")
-        ax.set_xlabel("Vertical")
-        ax.set_ylabel(feature)
         ax.tick_params(axis="x", rotation=30)
-
-    fig1.suptitle(
-        f"Engagement Rate Distribution: YouTube Shorts vs. Standard Videos",
-        y=1.02,
-    )
     sns.despine()
-    plt.tight_layout()
-    if save_figure_name is not None:
-        base_, ext_ = os.path.splitext(save_figure_name)
-        _save_fig(plt, f"{base_}_violin{ext_}")
-    plt.show()
+    fig_violin.tight_layout()
 
     # Figure 2: median with 95% CI grouped bar chart
-    fig2, ax3 = plt.subplots(figsize=(fig_w, fig_h))
+    fig_bar, ax_bar = plt.subplots(figsize=(fig_w, fig_h))
     sns.barplot(
         data=df_plot,
         x="vertical",
@@ -963,15 +892,9 @@ def plot_is_short_engagement(
         palette=["#e55c00", "#2980b9"],
         estimator=np.median,
         errorbar=("ci", 95),
-        ax=ax3,
+        ax=ax_bar,
     )
-    ax3.set_title(f"Median {feature} by Vertical × Content Type")
-    ax3.set_xlabel("Vertical")
-    ax3.set_ylabel(f"Median {feature}")
-    ax3.legend(title="Content Type")
+    ax_bar.legend(title="Content Type")
     sns.despine()
-    plt.tight_layout()
-    if save_figure_name is not None:
-        base_, ext_ = os.path.splitext(save_figure_name)
-        _save_fig(plt, f"{base_}_bar{ext_}")
-    plt.show()
+    fig_bar.tight_layout()
+    return fig_violin, (ax_standard, ax_short), fig_bar, ax_bar
