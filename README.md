@@ -260,6 +260,12 @@ Analysis and decision-making happens in modular, purpose-built [notebooks](noteb
 
 ---
 
+##### **License**
+
+This project is licensed under the [MIT License](./LICENSE).
+
+---
+
 ##### **Contact and Further Information**
 
 Jelani Gould-Bailey · [LinkedIn](https://www.linkedin.com/in/jelani-gould-bailey/) · [GitHub Repository](https://github.com/jelani-gb/capstone)
